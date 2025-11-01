@@ -2374,16 +2374,21 @@ async def fetch_llm_training_data(
                     f"total filtered: {len(all_filtered_observations)}"
                 )
 
-                # Check if there are more pages in this segment
-                if pagination.get("next_page") is None:
-                    logger.info(f"Reached last page in segment {segment_idx + 1}")
-                    break
-                
                 # If we've collected enough, stop
                 if len(all_filtered_observations) >= limit:
                     logger.info(f"Reached requested limit of {limit} samples")
                     break
                 
+                # Check if we got fewer observations than requested
+                # This is more reliable than trusting pagination.next_page when using time ranges
+                if len(raw_observations) < API_BATCH_SIZE:
+                    logger.info(
+                        f"Reached end of segment {segment_idx + 1} "
+                        f"(got {len(raw_observations)} < {API_BATCH_SIZE} observations)"
+                    )
+                    break
+                
+                # Continue to next page
                 current_page += 1
 
             logger.info(

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2] - 2024-11-02
+
+### 🐛 Critical Bug Fix: Incomplete Data Retrieval
+
+**Fixed a critical pagination bug** that caused the tool to stop fetching data too early when querying time ranges.
+
+### Fixed
+- **Pagination Logic**: Changed from trusting API's `next_page` field to checking actual data size
+  - Before: Stopped when `pagination.next_page == None` (unreliable with time ranges)
+  - After: Continues until receiving fewer observations than requested (< 100)
+  - This is more reliable when using `from_start_time` and `to_start_time` parameters
+- **Impact**: Users querying large time ranges were only getting partial data (e.g., ~50 records instead of thousands)
+  - Example: 60-day query with 100+ observations per segment was returning only first page per segment
+  - Now correctly fetches all pages within each time segment
+
+### Technical Details
+- LangFuse API's pagination metadata (`next_page`) can be unreliable when using time range filters
+- New strategy: Continue pagination until API returns fewer items than requested
+- Standard pagination pattern: Keep requesting until `len(results) < limit`
+
+### Upgrade Urgency
+**HIGH** - If you've been querying historical data and got unexpectedly small results, upgrade immediately and re-run your queries.
+
 ## [1.3.0] - 2024-11-01
 
 ### 🚀 Major Enhancement: Automatic Time Segmentation
