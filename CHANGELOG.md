@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2024-11-01
+
+### Changed
+- **Improved `ls_model_name` filtering**: Now supports partial matching (case-insensitive)
+  - Users can search with short model names (e.g., "Qwen3_235B") to match all variants
+  - "Qwen3_235B" now matches "Qwen3_235B_A22B_Instruct_2507_ShenZhen", etc.
+  - Case-insensitive: "qwen" matches "Qwen3_235B_A22B_Instruct_2507"
+  - `langgraph_node` and `agent_name` remain exact match (as intended)
+
+### Fixed
+- Resolved user-reported issue where partial model names failed to find data
+- Improved user experience by reducing trial-and-error in model name queries
+
+### Enhanced
+- Added comprehensive test for partial model name matching
+- Updated documentation with partial matching examples
+- Created detailed explanation document: `MODEL_NAME_PARTIAL_MATCHING.md`
+
 ## [1.2.0] - 2024-11-01
 
 ### Added

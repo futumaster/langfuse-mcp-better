@@ -253,7 +253,10 @@ The `fetch_llm_training_data` tool is specifically designed for extracting train
 ### Key Features
 
 - **🚀 Automatic Pagination**: Request any amount of data (1000, 10000+) - pagination is handled automatically
-- **Advanced Filtering**: Filter by `langgraph_node`, `agent_name`, or `ls_model_name` (at least one required)
+- **🔍 Smart Filtering**: 
+  - `ls_model_name`: Partial matching (case-insensitive) - "Qwen3_235B" matches all variants
+  - `langgraph_node` and `agent_name`: Exact matching for precision
+  - At least one filter required
 - **Multiple Output Formats**: Support for OpenAI, Anthropic, generic, and DPO formats
 - **Rich Metadata**: Includes token usage, model parameters, timestamps, and node information
 - **Time-based Queries**: Extract data from specific time ranges
@@ -361,12 +364,16 @@ fetch_llm_training_data(
 )
 ```
 
-#### Filter by model name (large scale)
+#### Filter by model name (partial matching)
 ```python
-# Extract 10,000 Qwen model calls for training data
+# Extract 10,000 Qwen model calls using partial name
+# "Qwen3_235B" will match all variants like:
+#   - Qwen3_235B_A22B_Instruct_2507
+#   - Qwen3_235B_A22B_Instruct_2507_ShenZhen
+#   - Qwen3_235B_A22B_Instruct_2507_Beijing
 fetch_llm_training_data(
     age=43200,  # 30 days
-    ls_model_name="Qwen3_235B_A22B_Instruct_2507",
+    ls_model_name="Qwen3_235B",  # Partial name - matches all variants!
     limit=10000,  # Large scale - automatically paginated
     output_format="openai"
 )

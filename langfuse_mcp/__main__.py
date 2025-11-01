@@ -2153,7 +2153,12 @@ async def fetch_llm_training_data(
         description="Agent name to filter by (e.g., 'supervisor', 'worker'). Matches metadata.agent_name",
     ),
     ls_model_name: str | None = Field(
-        None, description="LangSmith model name to filter by (e.g., 'Qwen3_235B_A22B_Instruct_2507'). Matches metadata.ls_model_name"
+        None,
+        description=(
+            "LangSmith model name to filter by. Supports partial matching (case-insensitive). "
+            "E.g., 'Qwen3_235B' will match 'Qwen3_235B_A22B_Instruct_2507_ShenZhen'. "
+            "Matches metadata.ls_model_name"
+        ),
     ),
     limit: int = Field(
         1000,
@@ -2199,9 +2204,9 @@ async def fetch_llm_training_data(
     Args:
         ctx: Context object containing lifespan context with Langfuse client
         age: Minutes ago to start looking (e.g., 1440 for 24 hours)
-        langgraph_node: LangGraph node name to filter by (matches metadata.langgraph_node)
-        agent_name: Agent name to filter by (matches metadata.agent_name)
-        ls_model_name: LangSmith model name to filter by (matches metadata.ls_model_name)
+        langgraph_node: LangGraph node name to filter by (exact match, matches metadata.langgraph_node)
+        agent_name: Agent name to filter by (exact match, matches metadata.agent_name)
+        ls_model_name: LangSmith model name to filter by (partial match, case-insensitive)
         limit: Maximum number of training samples to return (default: 1000, can be any size)
         output_format: Output format ('openai', 'anthropic', 'generic', 'dpo')
         include_metadata: Include additional metadata for analysis
@@ -2224,8 +2229,12 @@ async def fetch_llm_training_data(
         # Extract 5000 samples from a specific agent
         fetch_llm_training_data(age=10080, agent_name="supervisor", limit=5000, output_format="generic")
 
-        # Extract 10000 samples for a specific model (automatic pagination)
-        fetch_llm_training_data(age=1440, ls_model_name="Qwen3_235B_A22B_Instruct_2507", limit=10000)
+        # Extract samples for a specific model using partial name (will match all variants)
+        # "Qwen3_235B" matches "Qwen3_235B_A22B_Instruct_2507", "Qwen3_235B_A22B_Instruct_2507_ShenZhen", etc.
+        fetch_llm_training_data(age=7200, ls_model_name="Qwen3_235B", limit=1000, output_format="openai")
+        
+        # Combine filters: agent + model (partial match)
+        fetch_llm_training_data(age=7200, agent_name="supervisor", ls_model_name="Qwen3_235B", limit=1000)
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
@@ -2289,22 +2298,23 @@ async def fetch_llm_training_data(
             for obs in raw_observations:
                 metadata = obs.get("metadata", {})
 
-                # Filter by langgraph_node
+                # Filter by langgraph_node (exact match)
                 if langgraph_node is not None:
                     obs_langgraph_node = metadata.get("langgraph_node")
                     if obs_langgraph_node != langgraph_node:
                         continue
 
-                # Filter by agent_name
+                # Filter by agent_name (exact match)
                 if agent_name is not None:
                     obs_agent_name = metadata.get("agent_name")
                     if obs_agent_name != agent_name:
                         continue
 
-                # Filter by ls_model_name
+                # Filter by ls_model_name (partial match, case-insensitive)
+                # This allows matching "Qwen3_235B" to "Qwen3_235B_A22B_Instruct_2507_ShenZhen"
                 if ls_model_name is not None:
                     obs_ls_model_name = metadata.get("ls_model_name")
-                    if obs_ls_model_name != ls_model_name:
+                    if not obs_ls_model_name or ls_model_name.lower() not in obs_ls_model_name.lower():
                         continue
 
                 batch_filtered.append(obs)

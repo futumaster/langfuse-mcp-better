@@ -296,16 +296,16 @@ def test_fetch_llm_training_data_generic_format(state):
 
 
 def test_fetch_llm_training_data_filters_by_ls_model_name(state):
-    """fetch_llm_training_data should filter by ls_model_name."""
+    """fetch_llm_training_data should filter by ls_model_name with partial matching."""
     from langfuse_mcp.__main__ import fetch_llm_training_data
 
     state.langfuse_client.api.observations._mock_observations = [
         {
-            "id": "obs_gpt4",
+            "id": "obs_qwen_full",
             "type": "GENERATION",
             "trace_id": "trace_1",
             "start_time": "2024-01-01T00:00:00Z",
-            "model": "gpt-4",
+            "model": "qwen",
             "input": "Test prompt",
             "output": "Test response",
             "metadata": {
@@ -314,13 +314,26 @@ def test_fetch_llm_training_data_filters_by_ls_model_name(state):
             },
         },
         {
-            "id": "obs_gpt35",
+            "id": "obs_qwen_variant",
             "type": "GENERATION",
             "trace_id": "trace_2",
             "start_time": "2024-01-01T00:00:00Z",
-            "model": "gpt-3.5-turbo",
+            "model": "qwen",
             "input": "Test prompt 2",
             "output": "Test response 2",
+            "metadata": {
+                "langgraph_node": "llm_call",
+                "ls_model_name": "Qwen3_235B_A22B_Instruct_2507_ShenZhen",
+            },
+        },
+        {
+            "id": "obs_gpt",
+            "type": "GENERATION",
+            "trace_id": "trace_3",
+            "start_time": "2024-01-01T00:00:00Z",
+            "model": "gpt-3.5-turbo",
+            "input": "Test prompt 3",
+            "output": "Test response 3",
             "metadata": {
                 "langgraph_node": "llm_call",
                 "ls_model_name": "gpt-3.5-turbo",
@@ -329,13 +342,14 @@ def test_fetch_llm_training_data_filters_by_ls_model_name(state):
     ]
 
     ctx = FakeContext(state)
+    # Test partial matching: "Qwen3_235B" should match both Qwen variants
     result = asyncio.run(
         fetch_llm_training_data(
             ctx,
             age=1440,
             langgraph_node=None,
             agent_name=None,
-            ls_model_name="Qwen3_235B_A22B_Instruct_2507",
+            ls_model_name="Qwen3_235B",  # Partial name
             limit=100,
             output_format="generic",
             include_metadata=False,
@@ -343,8 +357,8 @@ def test_fetch_llm_training_data_filters_by_ls_model_name(state):
         )
     )
 
-    assert result["metadata"]["item_count"] == 1
-    # Should only return the Qwen observation
+    assert result["metadata"]["item_count"] == 2
+    # Should return both Qwen observations (full and variant)
 
 
 def test_fetch_llm_training_data_filters_by_agent_name(state):
