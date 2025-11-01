@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2024-11-01
+
+### Fixed
+- **Chinese character readability**: All JSON output now uses `ensure_ascii=False`
+  - Chinese and other Unicode characters are now displayed directly instead of being escaped
+  - Example: "你好" instead of "\u4f60\u597d"
+  - Affects all exported training data and saved files
+  - Greatly improves readability for non-ASCII languages
+
 ## [1.2.1] - 2024-11-01
 
 ### Changed

@@ -681,10 +681,11 @@ def serialize_full_json_string(data: Any) -> str:
     """
     try:
         # Use default=str to handle datetime and other non-serializable objects
-        return json.dumps(data, default=str)
+        # Use ensure_ascii=False to keep Chinese and other Unicode characters readable
+        return json.dumps(data, default=str, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Error serializing to full JSON string: {str(e)}")
-        return json.dumps({"error": f"Failed to serialize response: {str(e)}"})
+        return json.dumps({"error": f"Failed to serialize response: {str(e)}"}, ensure_ascii=False)
 
 
 def save_full_data_to_file(data: Any, base_filename_prefix: str, state: "MCPState") -> dict[str, Any]:
@@ -717,7 +718,8 @@ def save_full_data_to_file(data: Any, base_filename_prefix: str, state: "MCPStat
         os.makedirs(state.dump_dir, exist_ok=True)
 
         # Serialize the data with pretty-printing for better readability
-        json_str = json.dumps(data, default=str, indent=2)
+        # Use ensure_ascii=False to keep Chinese and other Unicode characters readable
+        json_str = json.dumps(data, default=str, indent=2, ensure_ascii=False)
 
         # Write to file
         with open(filepath, "w", encoding="utf-8") as f:
@@ -2464,7 +2466,7 @@ def _format_openai(obs_input: Any, obs_output: Any, metadata: dict, include_meta
             messages.append({"role": "user", "content": obs_input["prompt"]})
         else:
             # Convert dict to string representation
-            messages.append({"role": "user", "content": json.dumps(obs_input)})
+            messages.append({"role": "user", "content": json.dumps(obs_input, ensure_ascii=False)})
     elif isinstance(obs_input, list):
         # Assume it's already a messages list
         messages = obs_input
@@ -2478,7 +2480,7 @@ def _format_openai(obs_input: Any, obs_output: Any, metadata: dict, include_meta
         if "content" in obs_output:
             messages.append({"role": "assistant", "content": obs_output["content"]})
         else:
-            messages.append({"role": "assistant", "content": json.dumps(obs_output)})
+            messages.append({"role": "assistant", "content": json.dumps(obs_output, ensure_ascii=False)})
     else:
         messages.append({"role": "assistant", "content": str(obs_output)})
 
@@ -2511,7 +2513,7 @@ def _format_anthropic(obs_input: Any, obs_output: Any, metadata: dict, include_m
         elif "prompt" in obs_input:
             messages.append({"role": "user", "content": obs_input["prompt"]})
         else:
-            messages.append({"role": "user", "content": json.dumps(obs_input)})
+            messages.append({"role": "user", "content": json.dumps(obs_input, ensure_ascii=False)})
     elif isinstance(obs_input, list):
         for msg in obs_input:
             if isinstance(msg, dict) and msg.get("role") == "system":
@@ -2528,7 +2530,7 @@ def _format_anthropic(obs_input: Any, obs_output: Any, metadata: dict, include_m
         if "content" in obs_output:
             messages.append({"role": "assistant", "content": obs_output["content"]})
         else:
-            messages.append({"role": "assistant", "content": json.dumps(obs_output)})
+            messages.append({"role": "assistant", "content": json.dumps(obs_output, ensure_ascii=False)})
     else:
         messages.append({"role": "assistant", "content": str(obs_output)})
 
@@ -2553,7 +2555,7 @@ def _format_generic(obs_input: Any, obs_output: Any, metadata: dict, include_met
             # Convert messages to a single prompt string
             prompt = "\n\n".join([f"{msg.get('role', 'user')}: {msg.get('content', '')}" for msg in obs_input["messages"]])
         else:
-            prompt = json.dumps(obs_input)
+            prompt = json.dumps(obs_input, ensure_ascii=False)
     elif isinstance(obs_input, list):
         # Convert message list to string
         prompt = "\n\n".join([f"{msg.get('role', 'user')}: {msg.get('content', '')}" for msg in obs_input])
@@ -2567,7 +2569,7 @@ def _format_generic(obs_input: Any, obs_output: Any, metadata: dict, include_met
         if "content" in obs_output:
             completion = obs_output["content"]
         else:
-            completion = json.dumps(obs_output)
+            completion = json.dumps(obs_output, ensure_ascii=False)
     else:
         completion = str(obs_output)
 
@@ -2594,7 +2596,7 @@ def _format_dpo(obs_input: Any, obs_output: Any, metadata: dict, include_metadat
         elif "messages" in obs_input:
             prompt = "\n\n".join([f"{msg.get('role', 'user')}: {msg.get('content', '')}" for msg in obs_input["messages"]])
         else:
-            prompt = json.dumps(obs_input)
+            prompt = json.dumps(obs_input, ensure_ascii=False)
     else:
         prompt = str(obs_input)
 
@@ -2605,7 +2607,7 @@ def _format_dpo(obs_input: Any, obs_output: Any, metadata: dict, include_metadat
         if "content" in obs_output:
             chosen = obs_output["content"]
         else:
-            chosen = json.dumps(obs_output)
+            chosen = json.dumps(obs_output, ensure_ascii=False)
     else:
         chosen = str(obs_output)
 
