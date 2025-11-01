@@ -2177,10 +2177,11 @@ async def fetch_llm_training_data(
         ),
     ),
     include_metadata: bool = Field(
-        True,
+        False,
         description=(
             "Include additional metadata like model parameters, token usage, timestamps, and node information. "
-            "Useful for analysis and filtering during training."
+            "Default: False (pure training data). Set to True only if you need metadata for analysis, "
+            "debugging, or cost tracking. Metadata is NOT used during model training."
         ),
     ),
     output_mode: OUTPUT_MODE_LITERAL = Field(
@@ -2211,7 +2212,7 @@ async def fetch_llm_training_data(
         ls_model_name: LangSmith model name to filter by (partial match, case-insensitive)
         limit: Maximum number of training samples to return (default: 1000, can be any size)
         output_format: Output format ('openai', 'anthropic', 'generic', 'dpo')
-        include_metadata: Include additional metadata for analysis
+        include_metadata: Include metadata (default: False). Only set True for analysis, NOT for training
         output_mode: Controls output format and detail level
 
     Returns:

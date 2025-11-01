@@ -376,6 +376,7 @@ fetch_llm_training_data(
     ls_model_name="Qwen3_235B",  # Partial name - matches all variants!
     limit=10000,  # Large scale - automatically paginated
     output_format="openai"
+    # include_metadata=False by default - pure training data
 )
 ```
 
@@ -424,25 +425,24 @@ generation = langfuse.generation(
 )
 ```
 
-### Metadata Fields
+### Metadata Fields (Optional)
 
-When `include_metadata=True` (default), each training sample includes:
+**By default (`include_metadata=False`), only training data is returned** - pure messages/prompts without metadata. This is what you want for model training.
 
-- `observation_id`: Unique identifier for the observation
-- `trace_id`: Parent trace ID for tracing back to original request
+Set `include_metadata=True` only when you need metadata for:
+- **Data Analysis**: Token usage, cost tracking
+- **Quality Control**: Filtering by performance metrics
+- **Debugging**: Tracing back to original traces
+- **Reproducibility**: Understanding data sources
+
+When `include_metadata=True`, each sample includes:
+- `observation_id`, `trace_id`: For tracing back to source
 - `timestamp`: When the LLM call was made
-- `model`: LLM model used (e.g., "gpt-4", "claude-3-opus")
-- `model_parameters`: Model configuration (temperature, max_tokens, etc.)
-- `usage`: Token usage statistics (prompt_tokens, completion_tokens, total_tokens)
-- `langgraph_node`: LangGraph node name (for node-based filtering)
-- `agent_name`: Agent name (for agent-based filtering)
-- `ls_model_name`: LangSmith model name (for model-based filtering)
+- `model`, `model_parameters`: Model configuration
+- `usage`: Token usage statistics (for cost analysis)
+- `langgraph_node`, `agent_name`, `ls_model_name`: Source information
 
-This metadata is valuable for:
-- Filtering and analyzing training data
-- Cost analysis and optimization
-- Understanding model performance across different nodes and agents
-- Reproducibility and debugging
+**⚠️ Important**: Metadata is NOT used during model training. Keep it disabled (default) for cleaner training files.
 
 ## Development
 

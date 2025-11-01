@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.3] - 2024-11-01
+
+### Changed
+- **BREAKING**: `include_metadata` now defaults to `False` (was `True`)
+  - Training data now excludes metadata by default for cleaner training files
+  - Metadata is NOT used during model training, so this makes more sense
+  - Set `include_metadata=True` only when you need it for analysis, debugging, or cost tracking
+  - Reduces output size and improves training data quality
+
+### Enhanced
+- Updated documentation to clarify when metadata should be used
+- Added warnings that metadata is not used during training
+
 ## [1.2.2] - 2024-11-01
 
 ### Fixed
