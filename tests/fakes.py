@@ -98,11 +98,16 @@ class _ObservationsAPI:
         self._store = store
         self.last_get_many_kwargs: dict[str, Any] | None = None
         self.last_get_kwargs: dict[str, Any] | None = None
+        self._mock_observations: list[dict[str, Any]] | None = None
 
     def get_many(self, **kwargs: Any) -> FakePaginatedResponse:
         self.last_get_many_kwargs = kwargs
-        observations = list(self._store.observations.values())
-        data = [obs.__dict__ for obs in observations]
+        # Use mock observations if set, otherwise use store
+        if self._mock_observations is not None:
+            data = self._mock_observations
+        else:
+            observations = list(self._store.observations.values())
+            data = [obs.__dict__ for obs in observations]
         return FakePaginatedResponse(data=data, meta={"next_page": None, "total": len(data)})
 
     def get(self, observation_id: str, **kwargs: Any) -> dict[str, Any]:

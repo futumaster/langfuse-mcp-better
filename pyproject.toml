@@ -12,11 +12,12 @@ bump = true
 tag-pattern = "v*"
 
 [project]
-name = "langfuse-mcp"
+name = "langfuse-mcp-better"
 dynamic = ["version"]
-description = "Langfuse MCP server for accessing and analyzing telemetry data via natural language"
+description = "Enhanced Langfuse MCP server with training data extraction for fine-tuning and reinforcement learning. Supports LangGraph node filtering and multiple output formats."
 authors = [
-    {name = "Aviv Sinai", email = "avivsinai@gmail.com"}
+    {name = "Aviv Sinai", email = "avivsinai@gmail.com"},
+    {name = "Wenxin Huang", email = "wenxinhuang@example.com"}
 ]
 requires-python = ">=3.10,<3.14"
 readme = "README.md"
@@ -48,12 +49,15 @@ dev = [
 ]
 
 [project.scripts]
+langfuse-mcp-better = "langfuse_mcp.__main__:main"
+# Keep backward compatibility
 langfuse-mcp = "langfuse_mcp.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/avivsinai/langfuse-mcp"
-Repository = "https://github.com/avivsinai/langfuse-mcp"
-Issues = "https://github.com/avivsinai/langfuse-mcp/issues"
+Homepage = "https://github.com/futumaster/langfuse-mcp-better"
+Repository = "https://github.com/futumaster/langfuse-mcp-better"
+Issues = "https://github.com/futumaster/langfuse-mcp-better/issues"
+"Original Project" = "https://github.com/avivsinai/langfuse-mcp"
 
 [tool.hatch.build.targets.sdist]
 packages = ["langfuse_mcp"]

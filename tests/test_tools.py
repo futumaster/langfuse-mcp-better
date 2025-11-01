@@ -200,3 +200,228 @@ def test_truncate_large_strings_case_insensitive():
     assert isinstance(value, str)
     assert value.endswith("...")
     assert len(value) <= MAX_FIELD_LENGTH + len("...")
+
+
+def test_fetch_llm_training_data_openai_format(state):
+    """fetch_llm_training_data should format data in OpenAI format."""
+    from langfuse_mcp.__main__ import fetch_llm_training_data
+
+    # Add mock observations with LangGraph metadata
+    state.langfuse_client.api.observations._mock_observations = [
+        {
+            "id": "obs_train_1",
+            "type": "GENERATION",
+            "trace_id": "trace_1",
+            "start_time": "2024-01-01T00:00:00Z",
+            "model": "gpt-4",
+            "input": {"messages": [{"role": "user", "content": "What is AI?"}]},
+            "output": "AI is artificial intelligence.",
+            "metadata": {"langgraph_node": "llm_call", "langgraph_path": "agent.llm"},
+            "usage": {"total_tokens": 50},
+        }
+    ]
+
+    ctx = FakeContext(state)
+    result = asyncio.run(
+        fetch_llm_training_data(
+            ctx,
+            age=1440,
+            node_name="llm_call",
+            node_path=None,
+            model=None,
+            limit=100,
+            page=1,
+            output_format="openai",
+            include_metadata=True,
+            output_mode="compact",
+        )
+    )
+
+    assert result["metadata"]["item_count"] == 1
+    assert result["metadata"]["output_format"] == "openai"
+    assert "data" in result
+    sample = result["data"][0]
+    assert "messages" in sample
+    assert len(sample["messages"]) >= 2
+    assert sample["messages"][-1]["role"] == "assistant"
+    assert "metadata" in sample
+    assert sample["metadata"]["node_name"] == "llm_call"
+
+
+def test_fetch_llm_training_data_generic_format(state):
+    """fetch_llm_training_data should format data in generic prompt/completion format."""
+    from langfuse_mcp.__main__ import fetch_llm_training_data
+
+    state.langfuse_client.api.observations._mock_observations = [
+        {
+            "id": "obs_train_2",
+            "type": "GENERATION",
+            "trace_id": "trace_1",
+            "start_time": "2024-01-01T00:00:00Z",
+            "model": "gpt-3.5-turbo",
+            "input": "Explain machine learning",
+            "output": "Machine learning is a subset of AI...",
+            "metadata": {"langgraph_node": "reasoning_node", "langgraph_path": "agent.reasoning"},
+        }
+    ]
+
+    ctx = FakeContext(state)
+    result = asyncio.run(
+        fetch_llm_training_data(
+            ctx,
+            age=1440,
+            node_name=None,
+            node_path="agent.reasoning",
+            model=None,
+            limit=100,
+            page=1,
+            output_format="generic",
+            include_metadata=True,
+            output_mode="compact",
+        )
+    )
+
+    assert result["metadata"]["item_count"] == 1
+    sample = result["data"][0]
+    assert "prompt" in sample
+    assert "completion" in sample
+    assert sample["prompt"] == "Explain machine learning"
+    assert sample["completion"] == "Machine learning is a subset of AI..."
+
+
+def test_fetch_llm_training_data_filters_by_model(state):
+    """fetch_llm_training_data should filter by model name."""
+    from langfuse_mcp.__main__ import fetch_llm_training_data
+
+    state.langfuse_client.api.observations._mock_observations = [
+        {
+            "id": "obs_gpt4",
+            "type": "GENERATION",
+            "trace_id": "trace_1",
+            "start_time": "2024-01-01T00:00:00Z",
+            "model": "gpt-4",
+            "input": "Test prompt",
+            "output": "Test response",
+            "metadata": {"langgraph_node": "llm_call"},
+        },
+        {
+            "id": "obs_gpt35",
+            "type": "GENERATION",
+            "trace_id": "trace_2",
+            "start_time": "2024-01-01T00:00:00Z",
+            "model": "gpt-3.5-turbo",
+            "input": "Test prompt 2",
+            "output": "Test response 2",
+            "metadata": {"langgraph_node": "llm_call"},
+        },
+    ]
+
+    ctx = FakeContext(state)
+    result = asyncio.run(
+        fetch_llm_training_data(
+            ctx,
+            age=1440,
+            node_name=None,
+            node_path=None,
+            model="gpt-4",
+            limit=100,
+            page=1,
+            output_format="generic",
+            include_metadata=False,
+            output_mode="compact",
+        )
+    )
+
+    assert result["metadata"]["item_count"] == 1
+    # Should only return the gpt-4 observation
+
+
+def test_fetch_llm_training_data_filters_by_node_path(state):
+    """fetch_llm_training_data should filter by node path hierarchy."""
+    from langfuse_mcp.__main__ import fetch_llm_training_data
+
+    state.langfuse_client.api.observations._mock_observations = [
+        {
+            "id": "obs_reasoning",
+            "type": "GENERATION",
+            "trace_id": "trace_1",
+            "start_time": "2024-01-01T00:00:00Z",
+            "model": "gpt-4",
+            "input": "Think step by step",
+            "output": "Step 1...",
+            "metadata": {"langgraph_path": "agent.reasoning.step1"},
+        },
+        {
+            "id": "obs_tools",
+            "type": "GENERATION",
+            "trace_id": "trace_2",
+            "start_time": "2024-01-01T00:00:00Z",
+            "model": "gpt-4",
+            "input": "Use tool",
+            "output": "Tool result",
+            "metadata": {"langgraph_path": "agent.tools.search"},
+        },
+    ]
+
+    ctx = FakeContext(state)
+    result = asyncio.run(
+        fetch_llm_training_data(
+            ctx,
+            age=1440,
+            node_name=None,
+            node_path="agent.reasoning",
+            model=None,
+            limit=100,
+            page=1,
+            output_format="generic",
+            include_metadata=True,
+            output_mode="compact",
+        )
+    )
+
+    assert result["metadata"]["item_count"] == 1
+    sample = result["data"][0]
+    assert sample["metadata"]["node_path"] == "agent.reasoning.step1"
+
+
+def test_fetch_llm_training_data_dpo_format(state):
+    """fetch_llm_training_data should format data in DPO format."""
+    from langfuse_mcp.__main__ import fetch_llm_training_data
+
+    state.langfuse_client.api.observations._mock_observations = [
+        {
+            "id": "obs_dpo",
+            "type": "GENERATION",
+            "trace_id": "trace_1",
+            "start_time": "2024-01-01T00:00:00Z",
+            "model": "gpt-4",
+            "input": "Write a poem",
+            "output": "Roses are red...",
+            "metadata": {"langgraph_node": "poet"},
+        }
+    ]
+
+    ctx = FakeContext(state)
+    result = asyncio.run(
+        fetch_llm_training_data(
+            ctx,
+            age=1440,
+            node_name="poet",
+            node_path=None,
+            model=None,
+            limit=100,
+            page=1,
+            output_format="dpo",
+            include_metadata=True,
+            output_mode="compact",
+        )
+    )
+
+    assert result["metadata"]["item_count"] == 1
+    sample = result["data"][0]
+    assert "prompt" in sample
+    assert "chosen" in sample
+    assert "rejected" in sample
+    assert sample["rejected"] is None  # Should be None by default
+    assert "metadata" in sample
+    assert "_note" in sample["metadata"]  # Should have note about rejected samples

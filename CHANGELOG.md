@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2024-11-01
+
+### Changed
+- **BREAKING**: Rebranded as `langfuse-mcp-better` - now installable via `pip install langfuse-mcp-better`
+- Command renamed to `langfuse-mcp-better` (backward compatible `langfuse-mcp` command still available)
+- Enhanced project description to highlight training data extraction capabilities
+
+### Added
+- **NEW TOOL**: `fetch_llm_training_data` for extracting LLM training data from LangGraph nodes
+  - Support for LangGraph node hierarchy filtering (`node_name`, `node_path`)
+  - Multiple output formats: OpenAI, Anthropic, generic, and DPO
+  - Model-based filtering (e.g., filter by GPT-4, Claude-3)
+  - Rich metadata including token usage, model parameters, and timestamps
+  - Time-range based queries
+- Comprehensive test suite for training data extraction (5 new tests)
+- Demo script: `examples/demo_training_data_extraction.py`
+- Extensive documentation for training data extraction workflows
+
+### Enhanced
+- README with detailed training data extraction guide
+- Examples documentation with new training data extraction demo
+
 ## [0.2.1] - 2025-10-20
 
 ### Fixed

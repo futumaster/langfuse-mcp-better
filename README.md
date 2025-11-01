@@ -1,30 +1,52 @@
-# Langfuse MCP (Model Context Protocol)
+# Langfuse MCP Better (Model Context Protocol)
 
-[![Test](https://github.com/avivsinai/langfuse-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/avivsinai/langfuse-mcp/actions/workflows/test.yml)
-[![PyPI version](https://badge.fury.io/py/langfuse-mcp.svg)](https://badge.fury.io/py/langfuse-mcp)
+[![PyPI version](https://badge.fury.io/py/langfuse-mcp-better.svg)](https://badge.fury.io/py/langfuse-mcp-better)
 [![Python 3.10-3.13](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Based on langfuse-mcp](https://img.shields.io/badge/based%20on-langfuse--mcp-blue)](https://github.com/avivsinai/langfuse-mcp)
 
-This project provides a Model Context Protocol (MCP) server for Langfuse, allowing AI agents to query Langfuse trace data for better debugging and observability.
+An enhanced Model Context Protocol (MCP) server for Langfuse with powerful **training data extraction** capabilities. This fork adds specialized tools for extracting LLM training data from LangGraph applications, supporting fine-tuning and reinforcement learning workflows.
 
-## Quick Start with Cursor
+### What's New in Better?
 
-<a href="cursor://anysphere.cursor-deeplink/mcp/install?name=langfuse-mcp&config=eyJjb21tYW5kIjoidXZ4IiwiYXJncyI6WyJsYW5nZnVzZS1tY3AiLCItLXB1YmxpYy1rZXkiLCJZT1VSX1BVQkxJQ19LRVkiLCItLXNlY3JldC1rZXkiLCJZT1VSX1NFQ1JFVF9LRVkiLCItLWhvc3QiLCJodHRwczovL2Nsb3VkLmxhbmdmdXNlLmNvbSJdfQ==">
-  <img src="https://img.shields.io/badge/Add%20to-Cursor-blue?style=for-the-badge&logo=cursor" alt="Add to Cursor">
-</a>
+- 🎯 **Training Data Extraction**: Extract LLM interactions filtered by LangGraph node hierarchy
+- 🔄 **Multiple Output Formats**: OpenAI, Anthropic, generic prompt/completion, and DPO formats
+- 🎨 **Smart Filtering**: Filter by node name, node path, model, and time range
+- 📊 **Rich Metadata**: Token usage, model parameters, timestamps, and node information
+- 🚀 **Production Ready**: Full test coverage and comprehensive documentation
 
-### Installation Options
+Based on the excellent [langfuse-mcp](https://github.com/avivsinai/langfuse-mcp) by Aviv Sinai.
 
-🎯 **From Cursor IDE**: Click the button above (works seamlessly!)  
-🌐 **From GitHub Web**: Copy this deeplink and paste into your browser address bar:
+## Quick Start
+
+### Installation
+
+Install via pip or uvx:
+
+```bash
+# Using pip
+pip install langfuse-mcp-better
+
+# Using uvx (recommended)
+uvx langfuse-mcp-better --public-key YOUR_KEY --secret-key YOUR_SECRET --host https://cloud.langfuse.com
 ```
-cursor://anysphere.cursor-deeplink/mcp/install?name=langfuse-mcp&config=eyJjb21tYW5kIjoidXZ4IiwiYXJncyI6WyJsYW5nZnVzZS1tY3AiLCItLXB1YmxpYy1rZXkiLCJZT1VSX1BVQkxJQ19LRVkiLCItLXNlY3JldC1rZXkiLCJZT1VSX1NFQ1JFVF9LRVkiLCItLWhvc3QiLCJodHRwczovL2Nsb3VkLmxhbmdmdXNlLmNvbSJdfQ==
+
+### Cursor IDE Integration
+
+For Cursor IDE, you can use the deeplink (replace with your credentials):
+
+```json
+{
+  "mcpServers": {
+    "langfuse-better": {
+      "command": "uvx",
+      "args": ["langfuse-mcp-better", "--public-key", "YOUR_KEY", "--secret-key", "YOUR_SECRET", "--host", "https://cloud.langfuse.com"]
+    }
+  }
+}
 ```
-⚙️ **Manual Setup**: See [Configuration](#configuration-with-mcp-clients) section below
 
-> **💡 Note**: The "Add to Cursor" button only works from within Cursor IDE due to browser security restrictions on custom protocols (`cursor://`). This is normal and expected behavior per [Cursor's documentation](https://docs.cursor.com/deeplinks).
-
-**After installation**: Replace `YOUR_PUBLIC_KEY` and `YOUR_SECRET_KEY` with your actual Langfuse credentials in Cursor's MCP settings.
+> **💡 Note**: Cursor IDE deeplinks work best when configured manually in `.cursor/mcp.json`. See [Configuration](#configuration-with-mcp-clients) section below for details.
 
 ## Features
 
@@ -32,11 +54,16 @@ cursor://anysphere.cursor-deeplink/mcp/install?name=langfuse-mcp&config=eyJjb21t
 - Tool suite for AI agents to query trace data
 - Exception and error tracking capabilities
 - Session and user activity monitoring
+- **Training data extraction** for fine-tuning and reinforcement learning
+  - LangGraph node hierarchy filtering
+  - Multiple output formats (OpenAI, Anthropic, generic, DPO)
+  - Rich metadata including token usage and model parameters
 
 ## Available Tools
 
 The MCP server provides the following tools for AI agents:
 
+### Core Tools
 - `fetch_traces` - Find traces based on criteria like user ID, session ID, etc.
 - `fetch_trace` - Get a specific trace by ID
 - `fetch_observations` - Get observations filtered by type
@@ -44,10 +71,17 @@ The MCP server provides the following tools for AI agents:
 - `fetch_sessions` - List sessions in the current project
 - `get_session_details` - Get detailed information about a session
 - `get_user_sessions` - Get all sessions for a user
+
+### Exception & Error Tools
 - `find_exceptions` - Find exceptions and errors in traces
 - `find_exceptions_in_file` - Find exceptions in a specific file
 - `get_exception_details` - Get detailed information about an exception
 - `get_error_count` - Get the count of errors
+
+### Training Data Tools
+- `fetch_llm_training_data` - **[NEW]** Extract LLM training data from LangGraph nodes for fine-tuning and reinforcement learning. Supports multiple output formats (OpenAI, Anthropic, generic, DPO) and filtering by node hierarchy.
+
+### Utility Tools
 - `get_data_schema` - Get schema information for the data structures
 
 ## Setup
@@ -58,15 +92,21 @@ First, make sure `uv` is installed. For installation instructions, see the [`uv`
 
 If you already have an older version of `uv` installed, you might need to update it with `uv self update`.
 
-### Installation
+### Installation from PyPI
 
-> **Requirement**: The server now depends on the Langfuse Python SDK v3. Installations automatically pull `langfuse>=3.0.0` and require Python 3.10–3.13 while upstream SDK support for 3.14 is pending.
+> **Requirement**: The server depends on the Langfuse Python SDK v3. Installations automatically pull `langfuse>=3.0.0` and require Python 3.10–3.13.
 
 ```bash
-uv pip install langfuse-mcp
+# Using pip
+pip install langfuse-mcp-better
+
+# Using uv
+uv pip install langfuse-mcp-better
 ```
 
-If you're iterating on this repository, install the local checkout instead of PyPI:
+### Development Installation
+
+If you're iterating on this repository, install the local checkout:
 
 ```bash
 # from the repo root
@@ -104,16 +144,20 @@ When present, the MCP server reads these values automatically. CLI arguments sti
 
 ## Running the Server
 
-Run the server using `uvx` or the project virtual environment:
+Run the server using `uvx` or the installed command:
 
 ```bash
-uvx langfuse-mcp --public-key YOUR_KEY --secret-key YOUR_SECRET --host https://cloud.langfuse.com
+# Using uvx (no installation needed)
+uvx langfuse-mcp-better --public-key YOUR_KEY --secret-key YOUR_SECRET --host https://cloud.langfuse.com
 
-# or, once inside the repo virtual environment
+# Using the installed command
+langfuse-mcp-better --public-key YOUR_KEY --secret-key YOUR_SECRET --host https://cloud.langfuse.com
+
+# Backward compatible command also available
 langfuse-mcp --public-key YOUR_KEY --secret-key YOUR_SECRET --host https://cloud.langfuse.com
 ```
 
-> **Local checkout tip**: During development run `uv run --from /path/to/langfuse-mcp langfuse-mcp ...` (or `uv run python -m langfuse_mcp ...`) so `uv` executes the code in your working tree. Using the PyPI shortcut skips repository-only changes such as the new environment-based credential defaults and logging tweaks.
+> **Local checkout tip**: During development run `uv run python -m langfuse_mcp ...` to execute the code in your working tree.
 
 The server writes diagnostic logs to `/tmp/langfuse_mcp.log`. Remove the `--host` switch if you are targeting the default Cloud endpoint.
 Use `--log-level` (e.g., `--log-level DEBUG`) and `--log-to-console` to control verbosity during debugging.
@@ -169,9 +213,9 @@ Create a `.cursor/mcp.json` file in your project root:
 ```json
 {
   "mcpServers": {
-    "langfuse": {
+    "langfuse-better": {
       "command": "uvx",
-      "args": ["langfuse-mcp", "--public-key", "YOUR_KEY", "--secret-key", "YOUR_SECRET", "--host", "https://cloud.langfuse.com"]
+      "args": ["langfuse-mcp-better", "--public-key", "YOUR_KEY", "--secret-key", "YOUR_SECRET", "--host", "https://cloud.langfuse.com"]
     }
   }
 }
@@ -184,7 +228,7 @@ Add to your Claude settings:
 ```json
 {
   "command": ["uvx"],
-  "args": ["langfuse-mcp"],
+  "args": ["langfuse-mcp-better"],
   "type": "stdio",
   "env": {
     "LANGFUSE_PUBLIC_KEY": "YOUR_KEY",
@@ -202,13 +246,166 @@ Each tool supports different output modes to control the level of detail in resp
 - `full_json_string`: Returns the complete data as a JSON string
 - `full_json_file`: Saves the complete data to a file and returns a summary with file information
 
+## Using the Training Data Tool
+
+The `fetch_llm_training_data` tool is specifically designed for extracting training data from LangGraph applications. It provides powerful filtering and formatting capabilities for machine learning workflows.
+
+### Key Features
+
+- **Node-based Filtering**: Filter by LangGraph node name or hierarchical node path
+- **Model Filtering**: Extract data from specific LLM models (e.g., GPT-4, Claude)
+- **Multiple Output Formats**: Support for OpenAI, Anthropic, generic, and DPO formats
+- **Rich Metadata**: Includes token usage, model parameters, timestamps, and node information
+- **Time-based Queries**: Extract data from specific time ranges
+
+### Output Formats
+
+#### OpenAI Format (`output_format="openai"`)
+Perfect for OpenAI fine-tuning:
+```json
+{
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant"},
+    {"role": "user", "content": "What is AI?"},
+    {"role": "assistant", "content": "AI is artificial intelligence..."}
+  ],
+  "metadata": {
+    "model": "gpt-4",
+    "usage": {"total_tokens": 150},
+    "node_name": "llm_call",
+    "node_path": "agent.reasoning"
+  }
+}
+```
+
+#### Anthropic Format (`output_format="anthropic"`)
+Optimized for Claude fine-tuning:
+```json
+{
+  "system": "You are a helpful assistant",
+  "messages": [
+    {"role": "user", "content": "What is AI?"},
+    {"role": "assistant", "content": "AI is artificial intelligence..."}
+  ],
+  "metadata": {...}
+}
+```
+
+#### Generic Format (`output_format="generic"`)
+Simple prompt/completion pairs:
+```json
+{
+  "prompt": "What is AI?",
+  "completion": "AI is artificial intelligence...",
+  "metadata": {...}
+}
+```
+
+#### DPO Format (`output_format="dpo"`)
+For Direct Preference Optimization:
+```json
+{
+  "prompt": "What is AI?",
+  "chosen": "AI is artificial intelligence...",
+  "rejected": null,
+  "metadata": {
+    "_note": "rejected field is null - add negative samples for DPO training"
+  }
+}
+```
+
+### Usage Examples
+
+#### Extract all LLM calls from a specific node
+```python
+# Get all LLM interactions from the "agent_llm" node in the last 24 hours
+fetch_llm_training_data(
+    age=1440,  # 24 hours in minutes
+    node_name="agent_llm",
+    output_format="openai"
+)
+```
+
+#### Extract data from a node hierarchy
+```python
+# Get all reasoning-related LLM calls from the last week
+fetch_llm_training_data(
+    age=10080,  # 7 days
+    node_path="agent.reasoning",  # Matches agent.reasoning.* hierarchy
+    output_format="generic"
+)
+```
+
+#### Filter by model
+```python
+# Extract only GPT-4 calls for high-quality training data
+fetch_llm_training_data(
+    age=1440,
+    model="gpt-4",
+    output_format="openai",
+    limit=1000
+)
+```
+
+#### Save complete data to file
+```python
+# Extract data and save to file for offline processing
+fetch_llm_training_data(
+    age=10080,
+    node_name="agent_llm",
+    output_format="openai",
+    output_mode="full_json_file"  # Saves to configured dump directory
+)
+```
+
+### LangGraph Integration
+
+The tool expects LangGraph applications to include node metadata in their observations:
+
+```python
+# In your LangGraph application, add metadata to track nodes
+from langfuse import Langfuse
+
+langfuse = Langfuse()
+
+# When creating observations, include node metadata
+generation = langfuse.generation(
+    name="llm_call",
+    input=messages,
+    output=response,
+    metadata={
+        "langgraph_node": "reasoning_node",
+        "langgraph_path": "agent.reasoning.step1"
+    }
+)
+```
+
+### Metadata Fields
+
+When `include_metadata=True` (default), each training sample includes:
+
+- `observation_id`: Unique identifier for the observation
+- `trace_id`: Parent trace ID for tracing back to original request
+- `timestamp`: When the LLM call was made
+- `model`: LLM model used (e.g., "gpt-4", "claude-3-opus")
+- `model_parameters`: Model configuration (temperature, max_tokens, etc.)
+- `usage`: Token usage statistics (prompt_tokens, completion_tokens, total_tokens)
+- `node_name`: LangGraph node name
+- `node_path`: Full hierarchical node path
+
+This metadata is valuable for:
+- Filtering and analyzing training data
+- Cost analysis and optimization
+- Understanding model performance across different nodes
+- Reproducibility and debugging
+
 ## Development
 
 ### Clone the repository
 
 ```bash
-git clone https://github.com/yourusername/langfuse-mcp.git
-cd langfuse-mcp
+git clone https://github.com/futumaster/langfuse-mcp-better.git
+cd langfuse-mcp-better
 ```
 
 ### Create a virtual environment and install dependencies

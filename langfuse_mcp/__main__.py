@@ -2142,6 +2142,414 @@ async def get_error_count(
         raise
 
 
+async def fetch_llm_training_data(
+    ctx: Context,
+    age: ValidatedAge = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
+    node_name: str | None = Field(
+        None, description="LangGraph node name to filter by (e.g., 'llm_call', 'agent_node'). Matches metadata.langgraph_node"
+    ),
+    node_path: str | None = Field(
+        None,
+        description="LangGraph node path to filter by (e.g., 'agent.tools.search'). Supports hierarchical filtering via metadata.langgraph_path",
+    ),
+    model: str | None = Field(None, description="Filter by LLM model name (e.g., 'gpt-4', 'claude-3')"),
+    limit: int = Field(100, description="Maximum number of training samples to return"),
+    page: int = Field(1, description="Page number for pagination (starts at 1)"),
+    output_format: Literal["openai", "anthropic", "generic", "dpo"] = Field(
+        "generic",
+        description=(
+            "Output format for training data:\n"
+            "- 'openai': OpenAI fine-tuning format with messages array\n"
+            "- 'anthropic': Anthropic format with separate system/user/assistant\n"
+            "- 'generic': Generic format with prompt/completion pairs\n"
+            "- 'dpo': Direct Preference Optimization format with chosen/rejected pairs"
+        ),
+    ),
+    include_metadata: bool = Field(
+        True,
+        description=(
+            "Include additional metadata like model parameters, token usage, timestamps, and node information. "
+            "Useful for analysis and filtering during training."
+        ),
+    ),
+    output_mode: OUTPUT_MODE_LITERAL = Field(
+        OutputMode.COMPACT,
+        description=(
+            "Controls the output format and action. "
+            "'compact' (default): Returns training-ready data. "
+            "'full_json_string': Returns complete data as JSON string. "
+            "'full_json_file': Saves complete data to file and returns summary."
+        ),
+    ),
+) -> ResponseDict | str:
+    """Extract LLM training data from LangGraph nodes for fine-tuning and reinforcement learning.
+
+    This tool is specifically designed for extracting training data from LangGraph applications.
+    It filters observations by node hierarchy (langgraph_node, langgraph_path) and formats
+    the input/output pairs in a training-friendly format.
+
+    Args:
+        ctx: Context object containing lifespan context with Langfuse client
+        age: Minutes ago to start looking (e.g., 1440 for 24 hours)
+        node_name: LangGraph node name to filter by (matches metadata.langgraph_node)
+        node_path: LangGraph node path for hierarchical filtering (matches metadata.langgraph_path)
+        model: Filter by LLM model name
+        limit: Maximum number of training samples to return
+        page: Page number for pagination
+        output_format: Output format ('openai', 'anthropic', 'generic', 'dpo')
+        include_metadata: Include additional metadata for analysis
+        output_mode: Controls output format and detail level
+
+    Returns:
+        Training data in the specified format, suitable for fine-tuning or RL training.
+        Structure varies by output_format:
+
+        - 'openai': [{"messages": [{"role": "system", "content": "..."}, ...], "metadata": {...}}, ...]
+        - 'anthropic': [{"system": "...", "messages": [...], "metadata": {...}}, ...]
+        - 'generic': [{"prompt": "...", "completion": "...", "metadata": {...}}, ...]
+        - 'dpo': [{"prompt": "...", "chosen": "...", "rejected": "...", "metadata": {...}}, ...]
+
+    Usage Examples:
+        # Extract all LLM calls from a specific node
+        fetch_llm_training_data(age=1440, node_name="agent_llm", output_format="openai")
+
+        # Extract data from a node hierarchy
+        fetch_llm_training_data(age=10080, node_path="agent.reasoning", output_format="generic")
+
+        # Extract GPT-4 calls only
+        fetch_llm_training_data(age=1440, model="gpt-4", output_format="openai")
+    """
+    state = cast(MCPState, ctx.request_context.lifespan_context)
+
+    age = validate_age(age)
+
+    # Calculate timestamps from age
+    from_start_time = datetime.now(UTC) - timedelta(minutes=age)
+
+    try:
+        # Fetch GENERATION observations (LLM calls)
+        observation_items, pagination = _list_observations(
+            state.langfuse_client,
+            limit=limit,
+            page=page,
+            from_start_time=from_start_time,
+            to_start_time=None,
+            obs_type="GENERATION",  # Only LLM generations
+            name=None,
+            user_id=None,
+            trace_id=None,
+            parent_observation_id=None,
+            metadata=None,
+        )
+
+        # Convert to Python objects
+        raw_observations = [_sdk_object_to_python(obs) for obs in observation_items]
+
+        # Filter by node_name, node_path, and model
+        filtered_observations = []
+        for obs in raw_observations:
+            metadata = obs.get("metadata", {})
+
+            # Filter by node_name
+            if node_name is not None:
+                obs_node_name = metadata.get("langgraph_node") or metadata.get("node_name")
+                if obs_node_name != node_name:
+                    continue
+
+            # Filter by node_path (hierarchical)
+            if node_path is not None:
+                obs_node_path = metadata.get("langgraph_path") or metadata.get("node_path")
+                if obs_node_path is None or not obs_node_path.startswith(node_path):
+                    continue
+
+            # Filter by model
+            if model is not None:
+                obs_model = obs.get("model", "")
+                if not obs_model or model.lower() not in obs_model.lower():
+                    continue
+
+            filtered_observations.append(obs)
+
+        logger.info(
+            f"Filtered {len(filtered_observations)} observations from {len(raw_observations)} "
+            f"(node_name={node_name}, node_path={node_path}, model={model})"
+        )
+
+        # Format observations into training data
+        training_data = []
+        for obs in filtered_observations:
+            formatted_sample = _format_training_sample(obs, output_format, include_metadata)
+            if formatted_sample:  # Skip if formatting failed
+                training_data.append(formatted_sample)
+
+        logger.info(f"Formatted {len(training_data)} training samples in '{output_format}' format")
+
+        # Process based on output mode
+        mode = _ensure_output_mode(output_mode)
+        base_filename_prefix = f"training_data_{output_format}"
+        if node_name:
+            base_filename_prefix += f"_node_{node_name}"
+        if node_path:
+            base_filename_prefix += f"_path_{node_path.replace('.', '_')}"
+
+        processed_data, file_meta = process_data_with_mode(training_data, mode, base_filename_prefix, state)
+
+        logger.info(f"Extracted {len(training_data)} training samples, returning with output_mode={mode}")
+
+        # Return data in the standard response format
+        if mode == OutputMode.FULL_JSON_STRING:
+            return processed_data
+
+        metadata_block = {
+            "item_count": len(training_data),
+            "output_format": output_format,
+            "filters": {
+                "node_name": node_name,
+                "node_path": node_path,
+                "model": model,
+            },
+            "file_path": None,
+            "file_info": None,
+        }
+        if pagination.get("next_page") is not None:
+            metadata_block["next_page"] = pagination["next_page"]
+        if pagination.get("total") is not None:
+            metadata_block["total"] = pagination["total"]
+        if file_meta:
+            metadata_block.update(file_meta)
+
+        return {"data": processed_data, "metadata": metadata_block}
+    except Exception as e:
+        logger.error(f"Error fetching LLM training data: {str(e)}")
+        logger.exception(e)
+        raise
+
+
+def _format_training_sample(observation: dict[str, Any], output_format: str, include_metadata: bool) -> dict[str, Any] | None:
+    """Format a single observation into a training sample.
+
+    Args:
+        observation: The observation object to format
+        output_format: Target format ('openai', 'anthropic', 'generic', 'dpo')
+        include_metadata: Whether to include metadata
+
+    Returns:
+        Formatted training sample, or None if formatting failed
+    """
+    try:
+        # Extract input and output
+        obs_input = observation.get("input")
+        obs_output = observation.get("output")
+
+        if not obs_input or not obs_output:
+            logger.debug(f"Skipping observation {observation.get('id')} - missing input or output")
+            return None
+
+        # Build metadata if requested
+        metadata = {}
+        if include_metadata:
+            metadata = {
+                "observation_id": observation.get("id"),
+                "trace_id": observation.get("trace_id"),
+                "timestamp": observation.get("start_time"),
+                "model": observation.get("model"),
+                "model_parameters": observation.get("model_parameters"),
+                "usage": observation.get("usage"),
+                "node_name": observation.get("metadata", {}).get("langgraph_node")
+                or observation.get("metadata", {}).get("node_name"),
+                "node_path": observation.get("metadata", {}).get("langgraph_path")
+                or observation.get("metadata", {}).get("node_path"),
+            }
+
+        # Format based on output_format
+        if output_format == "openai":
+            return _format_openai(obs_input, obs_output, metadata, include_metadata)
+        elif output_format == "anthropic":
+            return _format_anthropic(obs_input, obs_output, metadata, include_metadata)
+        elif output_format == "dpo":
+            return _format_dpo(obs_input, obs_output, metadata, include_metadata)
+        else:  # generic
+            return _format_generic(obs_input, obs_output, metadata, include_metadata)
+
+    except Exception as e:
+        logger.warning(f"Error formatting observation {observation.get('id')}: {str(e)}")
+        return None
+
+
+def _format_openai(obs_input: Any, obs_output: Any, metadata: dict, include_metadata: bool) -> dict[str, Any]:
+    """Format as OpenAI fine-tuning format."""
+    messages = []
+
+    # Parse input - could be string, dict, or list of messages
+    if isinstance(obs_input, str):
+        messages.append({"role": "user", "content": obs_input})
+    elif isinstance(obs_input, dict):
+        # Check if it's already in message format
+        if "messages" in obs_input:
+            messages = obs_input["messages"]
+        elif "prompt" in obs_input:
+            messages.append({"role": "user", "content": obs_input["prompt"]})
+        else:
+            # Convert dict to string representation
+            messages.append({"role": "user", "content": json.dumps(obs_input)})
+    elif isinstance(obs_input, list):
+        # Assume it's already a messages list
+        messages = obs_input
+    else:
+        messages.append({"role": "user", "content": str(obs_input)})
+
+    # Parse output - typically the assistant's response
+    if isinstance(obs_output, str):
+        messages.append({"role": "assistant", "content": obs_output})
+    elif isinstance(obs_output, dict):
+        if "content" in obs_output:
+            messages.append({"role": "assistant", "content": obs_output["content"]})
+        else:
+            messages.append({"role": "assistant", "content": json.dumps(obs_output)})
+    else:
+        messages.append({"role": "assistant", "content": str(obs_output)})
+
+    result = {"messages": messages}
+    if include_metadata:
+        result["metadata"] = metadata
+
+    return result
+
+
+def _format_anthropic(obs_input: Any, obs_output: Any, metadata: dict, include_metadata: bool) -> dict[str, Any]:
+    """Format as Anthropic format with separate system/user/assistant."""
+    system = None
+    messages = []
+
+    # Parse input
+    if isinstance(obs_input, str):
+        messages.append({"role": "user", "content": obs_input})
+    elif isinstance(obs_input, dict):
+        if "messages" in obs_input:
+            input_messages = obs_input["messages"]
+            for msg in input_messages:
+                if msg.get("role") == "system":
+                    system = msg.get("content")
+                else:
+                    messages.append(msg)
+        elif "system" in obs_input and "prompt" in obs_input:
+            system = obs_input["system"]
+            messages.append({"role": "user", "content": obs_input["prompt"]})
+        elif "prompt" in obs_input:
+            messages.append({"role": "user", "content": obs_input["prompt"]})
+        else:
+            messages.append({"role": "user", "content": json.dumps(obs_input)})
+    elif isinstance(obs_input, list):
+        for msg in obs_input:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                system = msg.get("content")
+            else:
+                messages.append(msg)
+    else:
+        messages.append({"role": "user", "content": str(obs_input)})
+
+    # Parse output
+    if isinstance(obs_output, str):
+        messages.append({"role": "assistant", "content": obs_output})
+    elif isinstance(obs_output, dict):
+        if "content" in obs_output:
+            messages.append({"role": "assistant", "content": obs_output["content"]})
+        else:
+            messages.append({"role": "assistant", "content": json.dumps(obs_output)})
+    else:
+        messages.append({"role": "assistant", "content": str(obs_output)})
+
+    result = {"messages": messages}
+    if system:
+        result["system"] = system
+    if include_metadata:
+        result["metadata"] = metadata
+
+    return result
+
+
+def _format_generic(obs_input: Any, obs_output: Any, metadata: dict, include_metadata: bool) -> dict[str, Any]:
+    """Format as generic prompt/completion pairs."""
+    # Convert input to prompt string
+    if isinstance(obs_input, str):
+        prompt = obs_input
+    elif isinstance(obs_input, dict):
+        if "prompt" in obs_input:
+            prompt = obs_input["prompt"]
+        elif "messages" in obs_input:
+            # Convert messages to a single prompt string
+            prompt = "\n\n".join([f"{msg.get('role', 'user')}: {msg.get('content', '')}" for msg in obs_input["messages"]])
+        else:
+            prompt = json.dumps(obs_input)
+    elif isinstance(obs_input, list):
+        # Convert message list to string
+        prompt = "\n\n".join([f"{msg.get('role', 'user')}: {msg.get('content', '')}" for msg in obs_input])
+    else:
+        prompt = str(obs_input)
+
+    # Convert output to completion string
+    if isinstance(obs_output, str):
+        completion = obs_output
+    elif isinstance(obs_output, dict):
+        if "content" in obs_output:
+            completion = obs_output["content"]
+        else:
+            completion = json.dumps(obs_output)
+    else:
+        completion = str(obs_output)
+
+    result = {"prompt": prompt, "completion": completion}
+    if include_metadata:
+        result["metadata"] = metadata
+
+    return result
+
+
+def _format_dpo(obs_input: Any, obs_output: Any, metadata: dict, include_metadata: bool) -> dict[str, Any]:
+    """Format as DPO (Direct Preference Optimization) format.
+
+    Note: This format requires paired chosen/rejected responses. Since we only have
+    one response per observation, we mark the actual response as 'chosen' and leave
+    'rejected' as null. Users should post-process to add rejected samples.
+    """
+    # Convert input to prompt string
+    if isinstance(obs_input, str):
+        prompt = obs_input
+    elif isinstance(obs_input, dict):
+        if "prompt" in obs_input:
+            prompt = obs_input["prompt"]
+        elif "messages" in obs_input:
+            prompt = "\n\n".join([f"{msg.get('role', 'user')}: {msg.get('content', '')}" for msg in obs_input["messages"]])
+        else:
+            prompt = json.dumps(obs_input)
+    else:
+        prompt = str(obs_input)
+
+    # Convert output to chosen response
+    if isinstance(obs_output, str):
+        chosen = obs_output
+    elif isinstance(obs_output, dict):
+        if "content" in obs_output:
+            chosen = obs_output["content"]
+        else:
+            chosen = json.dumps(obs_output)
+    else:
+        chosen = str(obs_output)
+
+    result = {
+        "prompt": prompt,
+        "chosen": chosen,
+        "rejected": None,  # Placeholder - users should add rejected samples
+    }
+
+    if include_metadata:
+        result["metadata"] = metadata
+        # Add a note about rejected samples
+        result["metadata"]["_note"] = "rejected field is null - add negative samples for DPO training"
+
+    return result
+
+
 async def get_data_schema(ctx: Context, dummy: str = "") -> str:
     """Get schema of trace, span and event objects.
 
@@ -2323,6 +2731,7 @@ def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 1
     mcp.tool()(get_exception_details)
     mcp.tool()(get_error_count)
     mcp.tool()(get_data_schema)
+    mcp.tool()(fetch_llm_training_data)
 
     return mcp
 
