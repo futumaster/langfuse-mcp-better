@@ -458,3 +458,50 @@ def test_fetch_llm_training_data_dpo_format(state):
     assert sample["rejected"] is None  # Should be None by default
     assert "metadata" in sample
     assert "_note" in sample["metadata"]  # Should have note about rejected samples
+
+
+def test_fetch_llm_training_data_without_age_parameter(state):
+    """fetch_llm_training_data should work without age parameter (fetch all history)."""
+    from langfuse_mcp.__main__ import fetch_llm_training_data
+
+    state.langfuse_client.api.observations._mock_observations = [
+        {
+            "id": "obs_no_age_1",
+            "type": "GENERATION",
+            "trace_id": "trace_1",
+            "start_time": "2024-01-01T00:00:00Z",
+            "model": "gpt-4",
+            "input": {"messages": [{"role": "user", "content": "Test input"}]},
+            "output": "Test output",
+            "metadata": {
+                "langgraph_node": "test_node",
+                "agent_name": "test_agent",
+                "ls_model_name": "gpt-4",
+            },
+            "usage": {"total_tokens": 50},
+        }
+    ]
+
+    ctx = FakeContext(state)
+    result = asyncio.run(
+        fetch_llm_training_data(
+            ctx,
+            age=None,  # Explicitly test None
+            langgraph_node="test_node",
+            agent_name=None,
+            ls_model_name=None,
+            limit=100,
+            output_format="generic",
+            include_metadata=False,
+            output_mode="compact",
+        )
+    )
+
+    assert result["metadata"]["item_count"] == 1
+    assert result["metadata"]["output_format"] == "generic"
+    assert "data" in result
+    sample = result["data"][0]
+    assert "prompt" in sample
+    assert "completion" in sample
+    # Verify metadata is NOT included when include_metadata=False
+    assert "metadata" not in sample

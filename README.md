@@ -259,7 +259,7 @@ The `fetch_llm_training_data` tool is specifically designed for extracting train
   - At least one filter required
 - **Multiple Output Formats**: Support for OpenAI, Anthropic, generic, and DPO formats
 - **Rich Metadata**: Includes token usage, model parameters, timestamps, and node information
-- **Time-based Queries**: Extract data from specific time ranges
+- **Flexible Time Ranges**: Extract all historical data (default) or specify custom time ranges
 - **Flexible Combinations**: Combine multiple filters for precise data extraction
 - **Transparent**: Shows `pages_fetched` and `total_raw_observations` in metadata
 
@@ -344,11 +344,18 @@ fetch_llm_training_data(
 
 #### Extract all LLM calls from a specific LangGraph node
 ```python
-# Get 1000 LLM interactions from the "agent_llm" node in the last 24 hours
+# Get all historical LLM interactions from the "agent_llm" node
 fetch_llm_training_data(
-    age=1440,  # 24 hours in minutes
     langgraph_node="agent_llm",
     limit=1000,  # Default: will auto-paginate if needed
+    output_format="openai"
+)
+
+# Or specify a time range (last 24 hours)
+fetch_llm_training_data(
+    age=1440,  # Optional: 24 hours in minutes
+    langgraph_node="agent_llm",
+    limit=1000,
     output_format="openai"
 )
 ```
@@ -366,17 +373,24 @@ fetch_llm_training_data(
 
 #### Filter by model name (partial matching)
 ```python
-# Extract 10,000 Qwen model calls using partial name
+# Extract all historical Qwen model calls using partial name
 # "Qwen3_235B" will match all variants like:
 #   - Qwen3_235B_A22B_Instruct_2507
 #   - Qwen3_235B_A22B_Instruct_2507_ShenZhen
 #   - Qwen3_235B_A22B_Instruct_2507_Beijing
 fetch_llm_training_data(
-    age=43200,  # 30 days
     ls_model_name="Qwen3_235B",  # Partial name - matches all variants!
     limit=10000,  # Large scale - automatically paginated
     output_format="openai"
     # include_metadata=False by default - pure training data
+)
+
+# Or limit to last 30 days
+fetch_llm_training_data(
+    age=43200,  # Optional: 30 days
+    ls_model_name="Qwen3_235B",
+    limit=10000,
+    output_format="openai"
 )
 ```
 

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2024-11-01
+
+### Changed
+- **`age` parameter is now optional** in `fetch_llm_training_data`
+  - Default: `None` (no time limit, fetches all historical data)
+  - Users can now extract all training data without specifying a time range
+  - Time range can still be specified when needed (e.g., `age=1440` for last 24 hours)
+  - More flexible for training data extraction workflows
+  
+### Enhanced
+- Updated documentation to reflect optional time ranges
+- Added examples showing data extraction with and without time limits
+
 ## [1.2.3] - 2024-11-01
 
 ### Changed

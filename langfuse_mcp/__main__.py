@@ -2146,7 +2146,13 @@ async def get_error_count(
 
 async def fetch_llm_training_data(
     ctx: Context,
-    age: ValidatedAge = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
+    age: ValidatedAge | None = Field(
+        None,
+        description=(
+            "Minutes ago to start looking (e.g., 1440 for 24 hours, 10080 for 7 days). "
+            "Default: None (no time limit, fetch all historical data)"
+        ),
+    ),
     langgraph_node: str | None = Field(
         None, description="LangGraph node name to filter by (e.g., 'llm_call', 'agent_node'). Matches metadata.langgraph_node"
     ),
@@ -2206,7 +2212,8 @@ async def fetch_llm_training_data(
 
     Args:
         ctx: Context object containing lifespan context with Langfuse client
-        age: Minutes ago to start looking (e.g., 1440 for 24 hours)
+        age: Optional. Minutes ago to start looking (e.g., 1440 for 24 hours, 10080 for 7 days).
+             If not provided, fetches all historical data.
         langgraph_node: LangGraph node name to filter by (exact match, matches metadata.langgraph_node)
         agent_name: Agent name to filter by (exact match, matches metadata.agent_name)
         ls_model_name: LangSmith model name to filter by (partial match, case-insensitive)
@@ -2226,22 +2233,24 @@ async def fetch_llm_training_data(
         - 'dpo': [{"prompt": "...", "chosen": "...", "rejected": "...", "metadata": {...}}, ...]
 
     Usage Examples:
-        # Extract 1000 LLM calls from a specific langgraph node
-        fetch_llm_training_data(age=1440, langgraph_node="agent_llm", limit=1000, output_format="openai")
+        # Extract all historical LLM calls from a specific langgraph node (no time limit)
+        fetch_llm_training_data(langgraph_node="agent_llm", limit=1000, output_format="openai")
 
-        # Extract 5000 samples from a specific agent
+        # Extract 5000 samples from a specific agent (recent 7 days)
         fetch_llm_training_data(age=10080, agent_name="supervisor", limit=5000, output_format="generic")
 
-        # Extract samples for a specific model using partial name (will match all variants)
+        # Extract all historical samples for a specific model using partial name
         # "Qwen3_235B" matches "Qwen3_235B_A22B_Instruct_2507", "Qwen3_235B_A22B_Instruct_2507_ShenZhen", etc.
-        fetch_llm_training_data(age=7200, ls_model_name="Qwen3_235B", limit=1000, output_format="openai")
+        fetch_llm_training_data(ls_model_name="Qwen3_235B", limit=1000, output_format="openai")
         
-        # Combine filters: agent + model (partial match)
+        # Combine filters: agent + model (partial match, last 5 days)
         fetch_llm_training_data(age=7200, agent_name="supervisor", ls_model_name="Qwen3_235B", limit=1000)
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
-    age = validate_age(age)
+    # Validate age if provided
+    if age is not None:
+        age = validate_age(age)
 
     # Validate that at least one filter parameter is provided
     if not any([langgraph_node, agent_name, ls_model_name]):
@@ -2249,8 +2258,8 @@ async def fetch_llm_training_data(
             "At least one filter parameter must be provided: langgraph_node, agent_name, or ls_model_name"
         )
 
-    # Calculate timestamps from age
-    from_start_time = datetime.now(UTC) - timedelta(minutes=age)
+    # Calculate timestamps from age (None means no time limit)
+    from_start_time = datetime.now(UTC) - timedelta(minutes=age) if age is not None else None
 
     # LangFuse API has a maximum limit of 100 per request
     # We'll automatically paginate to get the requested number of samples
