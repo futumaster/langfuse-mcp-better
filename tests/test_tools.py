@@ -216,7 +216,11 @@ def test_fetch_llm_training_data_openai_format(state):
             "model": "gpt-4",
             "input": {"messages": [{"role": "user", "content": "What is AI?"}]},
             "output": "AI is artificial intelligence.",
-            "metadata": {"langgraph_node": "llm_call", "langgraph_path": "agent.llm"},
+            "metadata": {
+                "langgraph_node": "llm_call",
+                "agent_name": "test_agent",
+                "ls_model_name": "gpt-4-turbo",
+            },
             "usage": {"total_tokens": 50},
         }
     ]
@@ -226,9 +230,9 @@ def test_fetch_llm_training_data_openai_format(state):
         fetch_llm_training_data(
             ctx,
             age=1440,
-            node_name="llm_call",
-            node_path=None,
-            model=None,
+            langgraph_node="llm_call",
+            agent_name=None,
+            ls_model_name=None,
             limit=100,
             page=1,
             output_format="openai",
@@ -245,7 +249,7 @@ def test_fetch_llm_training_data_openai_format(state):
     assert len(sample["messages"]) >= 2
     assert sample["messages"][-1]["role"] == "assistant"
     assert "metadata" in sample
-    assert sample["metadata"]["node_name"] == "llm_call"
+    assert sample["metadata"]["langgraph_node"] == "llm_call"
 
 
 def test_fetch_llm_training_data_generic_format(state):
@@ -261,7 +265,11 @@ def test_fetch_llm_training_data_generic_format(state):
             "model": "gpt-3.5-turbo",
             "input": "Explain machine learning",
             "output": "Machine learning is a subset of AI...",
-            "metadata": {"langgraph_node": "reasoning_node", "langgraph_path": "agent.reasoning"},
+            "metadata": {
+                "langgraph_node": "reasoning_node",
+                "agent_name": "reasoning_agent",
+                "ls_model_name": "gpt-3.5-turbo",
+            },
         }
     ]
 
@@ -270,9 +278,9 @@ def test_fetch_llm_training_data_generic_format(state):
         fetch_llm_training_data(
             ctx,
             age=1440,
-            node_name=None,
-            node_path="agent.reasoning",
-            model=None,
+            langgraph_node="reasoning_node",
+            agent_name=None,
+            ls_model_name=None,
             limit=100,
             page=1,
             output_format="generic",
@@ -289,8 +297,8 @@ def test_fetch_llm_training_data_generic_format(state):
     assert sample["completion"] == "Machine learning is a subset of AI..."
 
 
-def test_fetch_llm_training_data_filters_by_model(state):
-    """fetch_llm_training_data should filter by model name."""
+def test_fetch_llm_training_data_filters_by_ls_model_name(state):
+    """fetch_llm_training_data should filter by ls_model_name."""
     from langfuse_mcp.__main__ import fetch_llm_training_data
 
     state.langfuse_client.api.observations._mock_observations = [
@@ -302,7 +310,10 @@ def test_fetch_llm_training_data_filters_by_model(state):
             "model": "gpt-4",
             "input": "Test prompt",
             "output": "Test response",
-            "metadata": {"langgraph_node": "llm_call"},
+            "metadata": {
+                "langgraph_node": "llm_call",
+                "ls_model_name": "Qwen3_235B_A22B_Instruct_2507",
+            },
         },
         {
             "id": "obs_gpt35",
@@ -312,7 +323,10 @@ def test_fetch_llm_training_data_filters_by_model(state):
             "model": "gpt-3.5-turbo",
             "input": "Test prompt 2",
             "output": "Test response 2",
-            "metadata": {"langgraph_node": "llm_call"},
+            "metadata": {
+                "langgraph_node": "llm_call",
+                "ls_model_name": "gpt-3.5-turbo",
+            },
         },
     ]
 
@@ -321,9 +335,9 @@ def test_fetch_llm_training_data_filters_by_model(state):
         fetch_llm_training_data(
             ctx,
             age=1440,
-            node_name=None,
-            node_path=None,
-            model="gpt-4",
+            langgraph_node=None,
+            agent_name=None,
+            ls_model_name="Qwen3_235B_A22B_Instruct_2507",
             limit=100,
             page=1,
             output_format="generic",
@@ -333,33 +347,39 @@ def test_fetch_llm_training_data_filters_by_model(state):
     )
 
     assert result["metadata"]["item_count"] == 1
-    # Should only return the gpt-4 observation
+    # Should only return the Qwen observation
 
 
-def test_fetch_llm_training_data_filters_by_node_path(state):
-    """fetch_llm_training_data should filter by node path hierarchy."""
+def test_fetch_llm_training_data_filters_by_agent_name(state):
+    """fetch_llm_training_data should filter by agent_name."""
     from langfuse_mcp.__main__ import fetch_llm_training_data
 
     state.langfuse_client.api.observations._mock_observations = [
         {
-            "id": "obs_reasoning",
+            "id": "obs_supervisor",
             "type": "GENERATION",
             "trace_id": "trace_1",
             "start_time": "2024-01-01T00:00:00Z",
             "model": "gpt-4",
-            "input": "Think step by step",
-            "output": "Step 1...",
-            "metadata": {"langgraph_path": "agent.reasoning.step1"},
+            "input": "Supervise the task",
+            "output": "Task supervised",
+            "metadata": {
+                "langgraph_node": "supervisor_node",
+                "agent_name": "supervisor",
+            },
         },
         {
-            "id": "obs_tools",
+            "id": "obs_worker",
             "type": "GENERATION",
             "trace_id": "trace_2",
             "start_time": "2024-01-01T00:00:00Z",
             "model": "gpt-4",
-            "input": "Use tool",
-            "output": "Tool result",
-            "metadata": {"langgraph_path": "agent.tools.search"},
+            "input": "Execute task",
+            "output": "Task executed",
+            "metadata": {
+                "langgraph_node": "worker_node",
+                "agent_name": "worker",
+            },
         },
     ]
 
@@ -368,9 +388,9 @@ def test_fetch_llm_training_data_filters_by_node_path(state):
         fetch_llm_training_data(
             ctx,
             age=1440,
-            node_name=None,
-            node_path="agent.reasoning",
-            model=None,
+            langgraph_node=None,
+            agent_name="supervisor",
+            ls_model_name=None,
             limit=100,
             page=1,
             output_format="generic",
@@ -381,7 +401,7 @@ def test_fetch_llm_training_data_filters_by_node_path(state):
 
     assert result["metadata"]["item_count"] == 1
     sample = result["data"][0]
-    assert sample["metadata"]["node_path"] == "agent.reasoning.step1"
+    assert sample["metadata"]["agent_name"] == "supervisor"
 
 
 def test_fetch_llm_training_data_dpo_format(state):
@@ -397,7 +417,11 @@ def test_fetch_llm_training_data_dpo_format(state):
             "model": "gpt-4",
             "input": "Write a poem",
             "output": "Roses are red...",
-            "metadata": {"langgraph_node": "poet"},
+            "metadata": {
+                "langgraph_node": "poet",
+                "agent_name": "poet_agent",
+                "ls_model_name": "gpt-4",
+            },
         }
     ]
 
@@ -406,9 +430,9 @@ def test_fetch_llm_training_data_dpo_format(state):
         fetch_llm_training_data(
             ctx,
             age=1440,
-            node_name="poet",
-            node_path=None,
-            model=None,
+            langgraph_node="poet",
+            agent_name=None,
+            ls_model_name=None,
             limit=100,
             page=1,
             output_format="dpo",

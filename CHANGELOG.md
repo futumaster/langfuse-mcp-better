@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2024-11-01
+
+### Changed
+- **BREAKING**: `fetch_llm_training_data` filter parameters updated to match real LangFuse metadata structure
+  - Renamed `node_name` → `langgraph_node` (matches `metadata.langgraph_node`)
+  - Removed `node_path` parameter (not commonly used in practice)
+  - Renamed `model` → `ls_model_name` (matches `metadata.ls_model_name`)
+  - Added `agent_name` parameter (matches `metadata.agent_name`)
+  - **At least one filter parameter is now required** (`langgraph_node`, `agent_name`, or `ls_model_name`)
+
+### Added
+- Comprehensive documentation: `TESTING_SUMMARY.md` and `PARAMETER_UPDATE_SUMMARY.md`
+- Real-world usage examples with actual LangFuse data
+
+### Enhanced
+- Tested `fetch_llm_training_data` with real LangFuse data source (verified with production data)
+- Updated metadata structure to include `langgraph_node`, `agent_name`, and `ls_model_name`
+- Improved documentation with real-world examples and complete metadata structure reference
+- Updated all 5 unit tests to reflect new parameter names
+- Enhanced README with migration guide and best practices
+
 ## [1.0.0] - 2024-11-01
 
 ### Changed

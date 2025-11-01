@@ -2145,14 +2145,16 @@ async def get_error_count(
 async def fetch_llm_training_data(
     ctx: Context,
     age: ValidatedAge = Field(..., description="Minutes ago to start looking (e.g., 1440 for 24 hours)"),
-    node_name: str | None = Field(
+    langgraph_node: str | None = Field(
         None, description="LangGraph node name to filter by (e.g., 'llm_call', 'agent_node'). Matches metadata.langgraph_node"
     ),
-    node_path: str | None = Field(
+    agent_name: str | None = Field(
         None,
-        description="LangGraph node path to filter by (e.g., 'agent.tools.search'). Supports hierarchical filtering via metadata.langgraph_path",
+        description="Agent name to filter by (e.g., 'supervisor', 'worker'). Matches metadata.agent_name",
     ),
-    model: str | None = Field(None, description="Filter by LLM model name (e.g., 'gpt-4', 'claude-3')"),
+    ls_model_name: str | None = Field(
+        None, description="LangSmith model name to filter by (e.g., 'Qwen3_235B_A22B_Instruct_2507'). Matches metadata.ls_model_name"
+    ),
     limit: int = Field(100, description="Maximum number of training samples to return"),
     page: int = Field(1, description="Page number for pagination (starts at 1)"),
     output_format: Literal["openai", "anthropic", "generic", "dpo"] = Field(
@@ -2185,15 +2187,15 @@ async def fetch_llm_training_data(
     """Extract LLM training data from LangGraph nodes for fine-tuning and reinforcement learning.
 
     This tool is specifically designed for extracting training data from LangGraph applications.
-    It filters observations by node hierarchy (langgraph_node, langgraph_path) and formats
-    the input/output pairs in a training-friendly format.
+    It filters observations by langgraph_node, agent_name, and ls_model_name metadata fields.
+    At least one filter parameter (langgraph_node, agent_name, or ls_model_name) must be provided.
 
     Args:
         ctx: Context object containing lifespan context with Langfuse client
         age: Minutes ago to start looking (e.g., 1440 for 24 hours)
-        node_name: LangGraph node name to filter by (matches metadata.langgraph_node)
-        node_path: LangGraph node path for hierarchical filtering (matches metadata.langgraph_path)
-        model: Filter by LLM model name
+        langgraph_node: LangGraph node name to filter by (matches metadata.langgraph_node)
+        agent_name: Agent name to filter by (matches metadata.agent_name)
+        ls_model_name: LangSmith model name to filter by (matches metadata.ls_model_name)
         limit: Maximum number of training samples to return
         page: Page number for pagination
         output_format: Output format ('openai', 'anthropic', 'generic', 'dpo')
@@ -2210,18 +2212,24 @@ async def fetch_llm_training_data(
         - 'dpo': [{"prompt": "...", "chosen": "...", "rejected": "...", "metadata": {...}}, ...]
 
     Usage Examples:
-        # Extract all LLM calls from a specific node
-        fetch_llm_training_data(age=1440, node_name="agent_llm", output_format="openai")
+        # Extract all LLM calls from a specific langgraph node
+        fetch_llm_training_data(age=1440, langgraph_node="agent_llm", output_format="openai")
 
-        # Extract data from a node hierarchy
-        fetch_llm_training_data(age=10080, node_path="agent.reasoning", output_format="generic")
+        # Extract data from a specific agent
+        fetch_llm_training_data(age=10080, agent_name="supervisor", output_format="generic")
 
-        # Extract GPT-4 calls only
-        fetch_llm_training_data(age=1440, model="gpt-4", output_format="openai")
+        # Extract data for a specific model
+        fetch_llm_training_data(age=1440, ls_model_name="Qwen3_235B_A22B_Instruct_2507", output_format="openai")
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
     age = validate_age(age)
+
+    # Validate that at least one filter parameter is provided
+    if not any([langgraph_node, agent_name, ls_model_name]):
+        raise ValueError(
+            "At least one filter parameter must be provided: langgraph_node, agent_name, or ls_model_name"
+        )
 
     # Calculate timestamps from age
     from_start_time = datetime.now(UTC) - timedelta(minutes=age)
@@ -2245,34 +2253,34 @@ async def fetch_llm_training_data(
         # Convert to Python objects
         raw_observations = [_sdk_object_to_python(obs) for obs in observation_items]
 
-        # Filter by node_name, node_path, and model
+        # Filter by langgraph_node, agent_name, and ls_model_name
         filtered_observations = []
         for obs in raw_observations:
             metadata = obs.get("metadata", {})
 
-            # Filter by node_name
-            if node_name is not None:
-                obs_node_name = metadata.get("langgraph_node") or metadata.get("node_name")
-                if obs_node_name != node_name:
+            # Filter by langgraph_node
+            if langgraph_node is not None:
+                obs_langgraph_node = metadata.get("langgraph_node")
+                if obs_langgraph_node != langgraph_node:
                     continue
 
-            # Filter by node_path (hierarchical)
-            if node_path is not None:
-                obs_node_path = metadata.get("langgraph_path") or metadata.get("node_path")
-                if obs_node_path is None or not obs_node_path.startswith(node_path):
+            # Filter by agent_name
+            if agent_name is not None:
+                obs_agent_name = metadata.get("agent_name")
+                if obs_agent_name != agent_name:
                     continue
 
-            # Filter by model
-            if model is not None:
-                obs_model = obs.get("model", "")
-                if not obs_model or model.lower() not in obs_model.lower():
+            # Filter by ls_model_name
+            if ls_model_name is not None:
+                obs_ls_model_name = metadata.get("ls_model_name")
+                if obs_ls_model_name != ls_model_name:
                     continue
 
             filtered_observations.append(obs)
 
         logger.info(
             f"Filtered {len(filtered_observations)} observations from {len(raw_observations)} "
-            f"(node_name={node_name}, node_path={node_path}, model={model})"
+            f"(langgraph_node={langgraph_node}, agent_name={agent_name}, ls_model_name={ls_model_name})"
         )
 
         # Format observations into training data
@@ -2287,10 +2295,12 @@ async def fetch_llm_training_data(
         # Process based on output mode
         mode = _ensure_output_mode(output_mode)
         base_filename_prefix = f"training_data_{output_format}"
-        if node_name:
-            base_filename_prefix += f"_node_{node_name}"
-        if node_path:
-            base_filename_prefix += f"_path_{node_path.replace('.', '_')}"
+        if langgraph_node:
+            base_filename_prefix += f"_node_{langgraph_node}"
+        if agent_name:
+            base_filename_prefix += f"_agent_{agent_name}"
+        if ls_model_name:
+            base_filename_prefix += f"_model_{ls_model_name.replace('/', '_')}"
 
         processed_data, file_meta = process_data_with_mode(training_data, mode, base_filename_prefix, state)
 
@@ -2304,9 +2314,9 @@ async def fetch_llm_training_data(
             "item_count": len(training_data),
             "output_format": output_format,
             "filters": {
-                "node_name": node_name,
-                "node_path": node_path,
-                "model": model,
+                "langgraph_node": langgraph_node,
+                "agent_name": agent_name,
+                "ls_model_name": ls_model_name,
             },
             "file_path": None,
             "file_info": None,
@@ -2348,6 +2358,7 @@ def _format_training_sample(observation: dict[str, Any], output_format: str, inc
         # Build metadata if requested
         metadata = {}
         if include_metadata:
+            obs_metadata = observation.get("metadata", {})
             metadata = {
                 "observation_id": observation.get("id"),
                 "trace_id": observation.get("trace_id"),
@@ -2355,10 +2366,9 @@ def _format_training_sample(observation: dict[str, Any], output_format: str, inc
                 "model": observation.get("model"),
                 "model_parameters": observation.get("model_parameters"),
                 "usage": observation.get("usage"),
-                "node_name": observation.get("metadata", {}).get("langgraph_node")
-                or observation.get("metadata", {}).get("node_name"),
-                "node_path": observation.get("metadata", {}).get("langgraph_path")
-                or observation.get("metadata", {}).get("node_path"),
+                "langgraph_node": obs_metadata.get("langgraph_node"),
+                "agent_name": obs_metadata.get("agent_name"),
+                "ls_model_name": obs_metadata.get("ls_model_name"),
             }
 
         # Format based on output_format

@@ -252,11 +252,11 @@ The `fetch_llm_training_data` tool is specifically designed for extracting train
 
 ### Key Features
 
-- **Node-based Filtering**: Filter by LangGraph node name or hierarchical node path
-- **Model Filtering**: Extract data from specific LLM models (e.g., GPT-4, Claude)
+- **Advanced Filtering**: Filter by `langgraph_node`, `agent_name`, or `ls_model_name` (at least one required)
 - **Multiple Output Formats**: Support for OpenAI, Anthropic, generic, and DPO formats
 - **Rich Metadata**: Includes token usage, model parameters, timestamps, and node information
 - **Time-based Queries**: Extract data from specific time ranges
+- **Flexible Combinations**: Combine multiple filters for precise data extraction
 
 ### Output Formats
 
@@ -272,8 +272,9 @@ Perfect for OpenAI fine-tuning:
   "metadata": {
     "model": "gpt-4",
     "usage": {"total_tokens": 150},
-    "node_name": "llm_call",
-    "node_path": "agent.reasoning"
+    "langgraph_node": "llm_call",
+    "agent_name": "supervisor",
+    "ls_model_name": "gpt-4-turbo"
   }
 }
 ```
@@ -316,34 +317,45 @@ For Direct Preference Optimization:
 
 ### Usage Examples
 
-#### Extract all LLM calls from a specific node
+#### Extract all LLM calls from a specific LangGraph node
 ```python
 # Get all LLM interactions from the "agent_llm" node in the last 24 hours
 fetch_llm_training_data(
     age=1440,  # 24 hours in minutes
-    node_name="agent_llm",
+    langgraph_node="agent_llm",
     output_format="openai"
 )
 ```
 
-#### Extract data from a node hierarchy
+#### Filter by agent name
 ```python
-# Get all reasoning-related LLM calls from the last week
+# Get all LLM calls from the "supervisor" agent in the last week
 fetch_llm_training_data(
     age=10080,  # 7 days
-    node_path="agent.reasoning",  # Matches agent.reasoning.* hierarchy
+    agent_name="supervisor",
     output_format="generic"
 )
 ```
 
-#### Filter by model
+#### Filter by model name
 ```python
-# Extract only GPT-4 calls for high-quality training data
+# Extract only Qwen model calls for training data
 fetch_llm_training_data(
     age=1440,
-    model="gpt-4",
+    ls_model_name="Qwen3_235B_A22B_Instruct_2507",
     output_format="openai",
     limit=1000
+)
+```
+
+#### Combine multiple filters
+```python
+# Extract data with specific node and model combination
+fetch_llm_training_data(
+    age=10080,
+    langgraph_node="reasoning_node",
+    ls_model_name="gpt-4-turbo",
+    output_format="openai"
 )
 ```
 
@@ -352,7 +364,7 @@ fetch_llm_training_data(
 # Extract data and save to file for offline processing
 fetch_llm_training_data(
     age=10080,
-    node_name="agent_llm",
+    agent_name="supervisor",
     output_format="openai",
     output_mode="full_json_file"  # Saves to configured dump directory
 )
@@ -360,7 +372,7 @@ fetch_llm_training_data(
 
 ### LangGraph Integration
 
-The tool expects LangGraph applications to include node metadata in their observations:
+The tool expects LangGraph applications to include specific metadata in their observations:
 
 ```python
 # In your LangGraph application, add metadata to track nodes
@@ -368,14 +380,15 @@ from langfuse import Langfuse
 
 langfuse = Langfuse()
 
-# When creating observations, include node metadata
+# When creating observations, include the required metadata fields
 generation = langfuse.generation(
     name="llm_call",
     input=messages,
     output=response,
     metadata={
-        "langgraph_node": "reasoning_node",
-        "langgraph_path": "agent.reasoning.step1"
+        "langgraph_node": "reasoning_node",      # Required for filtering by node
+        "agent_name": "supervisor",              # Required for filtering by agent
+        "ls_model_name": "gpt-4-turbo"          # Required for filtering by model
     }
 )
 ```
@@ -390,13 +403,14 @@ When `include_metadata=True` (default), each training sample includes:
 - `model`: LLM model used (e.g., "gpt-4", "claude-3-opus")
 - `model_parameters`: Model configuration (temperature, max_tokens, etc.)
 - `usage`: Token usage statistics (prompt_tokens, completion_tokens, total_tokens)
-- `node_name`: LangGraph node name
-- `node_path`: Full hierarchical node path
+- `langgraph_node`: LangGraph node name (for node-based filtering)
+- `agent_name`: Agent name (for agent-based filtering)
+- `ls_model_name`: LangSmith model name (for model-based filtering)
 
 This metadata is valuable for:
 - Filtering and analyzing training data
 - Cost analysis and optimization
-- Understanding model performance across different nodes
+- Understanding model performance across different nodes and agents
 - Reproducibility and debugging
 
 ## Development
