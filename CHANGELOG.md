@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2024-11-01
+
+### Added
+- **Automatic Pagination**: `fetch_llm_training_data` now handles large data requests automatically
+  - Removed `page` parameter - pagination is now handled internally
+  - Increased default `limit` from 100 to 1000
+  - Users can now request any amount of data (e.g., 1000, 10000) without hitting API limits
+  - Internal batching with 100-item pages to respect LangFuse API constraints
+  - New metadata fields: `pages_fetched` and `total_raw_observations` for transparency
+
+### Changed
+- **BREAKING**: Removed `page` parameter from `fetch_llm_training_data`
+  - Users no longer need to manually paginate
+  - All pagination is handled automatically by the MCP server
+
+### Enhanced
+- Improved logging for pagination process (shows progress across pages)
+- Better error handling for large data requests
+- Documentation updated with automatic pagination examples
+
 ## [1.1.0] - 2024-11-01
 
 ### Changed

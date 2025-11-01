@@ -252,11 +252,13 @@ The `fetch_llm_training_data` tool is specifically designed for extracting train
 
 ### Key Features
 
+- **🚀 Automatic Pagination**: Request any amount of data (1000, 10000+) - pagination is handled automatically
 - **Advanced Filtering**: Filter by `langgraph_node`, `agent_name`, or `ls_model_name` (at least one required)
 - **Multiple Output Formats**: Support for OpenAI, Anthropic, generic, and DPO formats
 - **Rich Metadata**: Includes token usage, model parameters, timestamps, and node information
 - **Time-based Queries**: Extract data from specific time ranges
 - **Flexible Combinations**: Combine multiple filters for precise data extraction
+- **Transparent**: Shows `pages_fetched` and `total_raw_observations` in metadata
 
 ### Output Formats
 
@@ -315,36 +317,58 @@ For Direct Preference Optimization:
 }
 ```
 
+### Automatic Pagination
+
+**No more API limit errors!** The tool automatically handles pagination for large data requests:
+
+```python
+# Request 5000 samples - no problem!
+fetch_llm_training_data(
+    age=10080,
+    ls_model_name="gpt-4-turbo",
+    limit=5000,  # Automatically fetches across multiple API calls
+    output_format="openai"
+)
+
+# The tool will:
+# 1. Break this into 50 API calls (100 items each)
+# 2. Automatically fetch all pages
+# 3. Aggregate and return all 5000 samples
+# 4. Show metadata: pages_fetched=50, total_raw_observations=5000
+```
+
 ### Usage Examples
 
 #### Extract all LLM calls from a specific LangGraph node
 ```python
-# Get all LLM interactions from the "agent_llm" node in the last 24 hours
+# Get 1000 LLM interactions from the "agent_llm" node in the last 24 hours
 fetch_llm_training_data(
     age=1440,  # 24 hours in minutes
     langgraph_node="agent_llm",
+    limit=1000,  # Default: will auto-paginate if needed
     output_format="openai"
 )
 ```
 
 #### Filter by agent name
 ```python
-# Get all LLM calls from the "supervisor" agent in the last week
+# Get 5000 LLM calls from the "supervisor" agent in the last week
 fetch_llm_training_data(
     age=10080,  # 7 days
     agent_name="supervisor",
+    limit=5000,  # Automatically handles pagination
     output_format="generic"
 )
 ```
 
-#### Filter by model name
+#### Filter by model name (large scale)
 ```python
-# Extract only Qwen model calls for training data
+# Extract 10,000 Qwen model calls for training data
 fetch_llm_training_data(
-    age=1440,
+    age=43200,  # 30 days
     ls_model_name="Qwen3_235B_A22B_Instruct_2507",
-    output_format="openai",
-    limit=1000
+    limit=10000,  # Large scale - automatically paginated
+    output_format="openai"
 )
 ```
 

@@ -2155,8 +2155,10 @@ async def fetch_llm_training_data(
     ls_model_name: str | None = Field(
         None, description="LangSmith model name to filter by (e.g., 'Qwen3_235B_A22B_Instruct_2507'). Matches metadata.ls_model_name"
     ),
-    limit: int = Field(100, description="Maximum number of training samples to return"),
-    page: int = Field(1, description="Page number for pagination (starts at 1)"),
+    limit: int = Field(
+        1000,
+        description="Maximum number of training samples to return. Can be any size - pagination is handled automatically. Default: 1000",
+    ),
     output_format: Literal["openai", "anthropic", "generic", "dpo"] = Field(
         "generic",
         description=(
@@ -2190,36 +2192,40 @@ async def fetch_llm_training_data(
     It filters observations by langgraph_node, agent_name, and ls_model_name metadata fields.
     At least one filter parameter (langgraph_node, agent_name, or ls_model_name) must be provided.
 
+    **Automatic Pagination**: This tool handles LangFuse API limits internally. You can request
+    any number of samples (e.g., 1000, 10000) and the tool will automatically paginate through
+    the API to collect all requested data. No manual pagination required!
+
     Args:
         ctx: Context object containing lifespan context with Langfuse client
         age: Minutes ago to start looking (e.g., 1440 for 24 hours)
         langgraph_node: LangGraph node name to filter by (matches metadata.langgraph_node)
         agent_name: Agent name to filter by (matches metadata.agent_name)
         ls_model_name: LangSmith model name to filter by (matches metadata.ls_model_name)
-        limit: Maximum number of training samples to return
-        page: Page number for pagination
+        limit: Maximum number of training samples to return (default: 1000, can be any size)
         output_format: Output format ('openai', 'anthropic', 'generic', 'dpo')
         include_metadata: Include additional metadata for analysis
         output_mode: Controls output format and detail level
 
     Returns:
         Training data in the specified format, suitable for fine-tuning or RL training.
+        Metadata includes pages_fetched and total_raw_observations for transparency.
+        
         Structure varies by output_format:
-
         - 'openai': [{"messages": [{"role": "system", "content": "..."}, ...], "metadata": {...}}, ...]
         - 'anthropic': [{"system": "...", "messages": [...], "metadata": {...}}, ...]
         - 'generic': [{"prompt": "...", "completion": "...", "metadata": {...}}, ...]
         - 'dpo': [{"prompt": "...", "chosen": "...", "rejected": "...", "metadata": {...}}, ...]
 
     Usage Examples:
-        # Extract all LLM calls from a specific langgraph node
-        fetch_llm_training_data(age=1440, langgraph_node="agent_llm", output_format="openai")
+        # Extract 1000 LLM calls from a specific langgraph node
+        fetch_llm_training_data(age=1440, langgraph_node="agent_llm", limit=1000, output_format="openai")
 
-        # Extract data from a specific agent
-        fetch_llm_training_data(age=10080, agent_name="supervisor", output_format="generic")
+        # Extract 5000 samples from a specific agent
+        fetch_llm_training_data(age=10080, agent_name="supervisor", limit=5000, output_format="generic")
 
-        # Extract data for a specific model
-        fetch_llm_training_data(age=1440, ls_model_name="Qwen3_235B_A22B_Instruct_2507", output_format="openai")
+        # Extract 10000 samples for a specific model (automatic pagination)
+        fetch_llm_training_data(age=1440, ls_model_name="Qwen3_235B_A22B_Instruct_2507", limit=10000)
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
 
@@ -2234,53 +2240,102 @@ async def fetch_llm_training_data(
     # Calculate timestamps from age
     from_start_time = datetime.now(UTC) - timedelta(minutes=age)
 
+    # LangFuse API has a maximum limit of 100 per request
+    # We'll automatically paginate to get the requested number of samples
+    API_BATCH_SIZE = 100
+    
     try:
-        # Fetch GENERATION observations (LLM calls)
-        observation_items, pagination = _list_observations(
-            state.langfuse_client,
-            limit=limit,
-            page=page,
-            from_start_time=from_start_time,
-            to_start_time=None,
-            obs_type="GENERATION",  # Only LLM generations
-            name=None,
-            user_id=None,
-            trace_id=None,
-            parent_observation_id=None,
-            metadata=None,
+        all_filtered_observations = []
+        current_page = 1
+        total_fetched = 0
+        total_raw_observations = 0
+        
+        logger.info(
+            f"Starting to fetch training data with limit={limit}, filters: "
+            f"langgraph_node={langgraph_node}, agent_name={agent_name}, ls_model_name={ls_model_name}"
         )
 
-        # Convert to Python objects
-        raw_observations = [_sdk_object_to_python(obs) for obs in observation_items]
+        # Keep fetching until we have enough filtered observations or no more data
+        while len(all_filtered_observations) < limit:
+            # Calculate how many more we need
+            remaining = limit - len(all_filtered_observations)
+            batch_size = min(API_BATCH_SIZE, remaining)
+            
+            # Fetch a batch of observations
+            observation_items, pagination = _list_observations(
+                state.langfuse_client,
+                limit=API_BATCH_SIZE,  # Always use max batch size for efficiency
+                page=current_page,
+                from_start_time=from_start_time,
+                to_start_time=None,
+                obs_type="GENERATION",  # Only LLM generations
+                name=None,
+                user_id=None,
+                trace_id=None,
+                parent_observation_id=None,
+                metadata=None,
+            )
 
-        # Filter by langgraph_node, agent_name, and ls_model_name
-        filtered_observations = []
-        for obs in raw_observations:
-            metadata = obs.get("metadata", {})
+            if not observation_items:
+                logger.info(f"No more observations available (fetched {current_page} pages)")
+                break
 
-            # Filter by langgraph_node
-            if langgraph_node is not None:
-                obs_langgraph_node = metadata.get("langgraph_node")
-                if obs_langgraph_node != langgraph_node:
-                    continue
+            # Convert to Python objects
+            raw_observations = [_sdk_object_to_python(obs) for obs in observation_items]
+            total_raw_observations += len(raw_observations)
 
-            # Filter by agent_name
-            if agent_name is not None:
-                obs_agent_name = metadata.get("agent_name")
-                if obs_agent_name != agent_name:
-                    continue
+            # Filter by langgraph_node, agent_name, and ls_model_name
+            batch_filtered = []
+            for obs in raw_observations:
+                metadata = obs.get("metadata", {})
 
-            # Filter by ls_model_name
-            if ls_model_name is not None:
-                obs_ls_model_name = metadata.get("ls_model_name")
-                if obs_ls_model_name != ls_model_name:
-                    continue
+                # Filter by langgraph_node
+                if langgraph_node is not None:
+                    obs_langgraph_node = metadata.get("langgraph_node")
+                    if obs_langgraph_node != langgraph_node:
+                        continue
 
-            filtered_observations.append(obs)
+                # Filter by agent_name
+                if agent_name is not None:
+                    obs_agent_name = metadata.get("agent_name")
+                    if obs_agent_name != agent_name:
+                        continue
+
+                # Filter by ls_model_name
+                if ls_model_name is not None:
+                    obs_ls_model_name = metadata.get("ls_model_name")
+                    if obs_ls_model_name != ls_model_name:
+                        continue
+
+                batch_filtered.append(obs)
+            
+            all_filtered_observations.extend(batch_filtered)
+            
+            logger.info(
+                f"Page {current_page}: fetched {len(raw_observations)} observations, "
+                f"filtered to {len(batch_filtered)}, total filtered: {len(all_filtered_observations)}"
+            )
+
+            # Check if there are more pages
+            if pagination.get("next_page") is None:
+                logger.info("Reached last page of observations")
+                break
+            
+            # If we've collected enough, stop
+            if len(all_filtered_observations) >= limit:
+                logger.info(f"Reached requested limit of {limit} samples")
+                break
+            
+            current_page += 1
+            total_fetched += len(raw_observations)
+
+        # Trim to exact limit if we got more
+        filtered_observations = all_filtered_observations[:limit]
 
         logger.info(
-            f"Filtered {len(filtered_observations)} observations from {len(raw_observations)} "
-            f"(langgraph_node={langgraph_node}, agent_name={agent_name}, ls_model_name={ls_model_name})"
+            f"Filtered {len(filtered_observations)} observations from {total_raw_observations} total "
+            f"across {current_page} pages (langgraph_node={langgraph_node}, agent_name={agent_name}, "
+            f"ls_model_name={ls_model_name})"
         )
 
         # Format observations into training data
@@ -2318,13 +2373,11 @@ async def fetch_llm_training_data(
                 "agent_name": agent_name,
                 "ls_model_name": ls_model_name,
             },
+            "pages_fetched": current_page,
+            "total_raw_observations": total_raw_observations,
             "file_path": None,
             "file_info": None,
         }
-        if pagination.get("next_page") is not None:
-            metadata_block["next_page"] = pagination["next_page"]
-        if pagination.get("total") is not None:
-            metadata_block["total"] = pagination["total"]
         if file_meta:
             metadata_block.update(file_meta)
 
