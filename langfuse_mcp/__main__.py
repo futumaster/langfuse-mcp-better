@@ -836,8 +836,29 @@ def validate_age(age: int) -> int:
     return age
 
 
+def validate_age_unlimited(age: int) -> int:
+    """Validate that age is positive (no upper limit).
+
+    Args:
+        age: Age in minutes to validate
+
+    Returns:
+        The validated age if it passes validation
+
+    Raises:
+        ValueError: If age is not positive
+    """
+    if age <= 0:
+        raise ValueError("Age must be positive")
+    logger.debug(f"Age validated (unlimited): {age} minutes")
+    return age
+
+
 ValidatedAge = Annotated[int, AfterValidator(validate_age)]
 """Type for validated age values (positive integer up to 7 days/10080 minutes)"""
+
+ValidatedAgeUnlimited = Annotated[int, AfterValidator(validate_age_unlimited)]
+"""Type for validated age values (positive integer, no upper limit)"""
 
 
 def clear_caches(state: MCPState) -> None:
@@ -2146,12 +2167,8 @@ async def get_error_count(
 
 async def fetch_llm_training_data(
     ctx: Context,
-    age: ValidatedAge | None = Field(
-        None,
-        description=(
-            "Minutes ago to start looking (e.g., 1440 for 24 hours, 10080 for 7 days). "
-            "Default: None (no time limit, fetch all historical data)"
-        ),
+    age: ValidatedAgeUnlimited = Field(
+        ..., description="Minutes ago to start looking (e.g., 1440 for 24 hours, 43200 for 30 days). No time limit."
     ),
     langgraph_node: str | None = Field(
         None, description="LangGraph node name to filter by (e.g., 'llm_call', 'agent_node'). Matches metadata.langgraph_node"
@@ -2206,14 +2223,15 @@ async def fetch_llm_training_data(
     It filters observations by langgraph_node, agent_name, and ls_model_name metadata fields.
     At least one filter parameter (langgraph_node, agent_name, or ls_model_name) must be provided.
 
-    **Automatic Pagination**: This tool handles LangFuse API limits internally. You can request
-    any number of samples (e.g., 1000, 10000) and the tool will automatically paginate through
-    the API to collect all requested data. No manual pagination required!
+    **Automatic Pagination & Time Segmentation**: This tool handles both LangFuse API limits 
+    and time range limitations internally:
+    - Pagination: Automatically paginates through API to collect all requested data
+    - Time Segmentation: For queries > 7 days, automatically splits into 7-day segments
+    - You can request any number of samples (e.g., 1000, 10000) and any time range (e.g., 30 days, 60 days)
 
     Args:
         ctx: Context object containing lifespan context with Langfuse client
-        age: Optional. Minutes ago to start looking (e.g., 1440 for 24 hours, 10080 for 7 days).
-             If not provided, fetches all historical data.
+        age: Minutes ago to start looking (e.g., 1440 for 24 hours, 43200 for 30 days). No time limit.
         langgraph_node: LangGraph node name to filter by (exact match, matches metadata.langgraph_node)
         agent_name: Agent name to filter by (exact match, matches metadata.agent_name)
         ls_model_name: LangSmith model name to filter by (partial match, case-insensitive)
@@ -2224,7 +2242,7 @@ async def fetch_llm_training_data(
 
     Returns:
         Training data in the specified format, suitable for fine-tuning or RL training.
-        Metadata includes pages_fetched and total_raw_observations for transparency.
+        Metadata includes pages_fetched, time_segments_processed, and total_raw_observations for transparency.
         
         Structure varies by output_format:
         - 'openai': [{"messages": [{"role": "system", "content": "..."}, ...], "metadata": {...}}, ...]
@@ -2233,24 +2251,20 @@ async def fetch_llm_training_data(
         - 'dpo': [{"prompt": "...", "chosen": "...", "rejected": "...", "metadata": {...}}, ...]
 
     Usage Examples:
-        # Extract all historical LLM calls from a specific langgraph node (no time limit)
-        fetch_llm_training_data(langgraph_node="agent_llm", limit=1000, output_format="openai")
+        # Extract 1000 LLM calls from a specific langgraph node (last 24 hours)
+        fetch_llm_training_data(age=1440, langgraph_node="agent_llm", limit=1000, output_format="openai")
 
-        # Extract 5000 samples from a specific agent (recent 7 days)
-        fetch_llm_training_data(age=10080, agent_name="supervisor", limit=5000, output_format="generic")
+        # Extract 5000 samples from a specific agent (last 30 days - auto-segmented)
+        fetch_llm_training_data(age=43200, agent_name="supervisor", limit=5000, output_format="generic")
 
-        # Extract all historical samples for a specific model using partial name
+        # Extract samples for a specific model using partial name (last 60 days - auto-segmented)
         # "Qwen3_235B" matches "Qwen3_235B_A22B_Instruct_2507", "Qwen3_235B_A22B_Instruct_2507_ShenZhen", etc.
-        fetch_llm_training_data(ls_model_name="Qwen3_235B", limit=1000, output_format="openai")
+        fetch_llm_training_data(age=86400, ls_model_name="Qwen3_235B", limit=10000, output_format="openai")
         
-        # Combine filters: agent + model (partial match, last 5 days)
-        fetch_llm_training_data(age=7200, agent_name="supervisor", ls_model_name="Qwen3_235B", limit=1000)
+        # Combine filters: agent + model (partial match, last 14 days)
+        fetch_llm_training_data(age=20160, agent_name="supervisor", ls_model_name="Qwen3_235B", limit=1000)
     """
     state = cast(MCPState, ctx.request_context.lifespan_context)
-
-    # Validate age if provided
-    if age is not None:
-        age = validate_age(age)
 
     # Validate that at least one filter parameter is provided
     if not any([langgraph_node, agent_name, ls_model_name]):
@@ -2258,106 +2272,132 @@ async def fetch_llm_training_data(
             "At least one filter parameter must be provided: langgraph_node, agent_name, or ls_model_name"
         )
 
-    # Calculate timestamps from age (None means no time limit)
-    from_start_time = datetime.now(UTC) - timedelta(minutes=age) if age is not None else None
+    # Split time range into segments if needed (LangFuse API works best with <= 7 day windows)
+    MAX_TIME_WINDOW = 7 * 24 * 60  # 7 days in minutes
+    now = datetime.now(UTC)
+    end_time = now
+    start_time = now - timedelta(minutes=age)
+
+    # Calculate time segments (working backwards from now)
+    time_segments = []
+    current_end = end_time
+    while current_end > start_time:
+        current_start = max(current_end - timedelta(minutes=MAX_TIME_WINDOW), start_time)
+        time_segments.append((current_start, current_end))
+        current_end = current_start
+
+    logger.info(
+        f"Starting to fetch training data with limit={limit}, age={age} minutes ({age/1440:.1f} days), "
+        f"filters: langgraph_node={langgraph_node}, agent_name={agent_name}, ls_model_name={ls_model_name}, "
+        f"time_segments={len(time_segments)}"
+    )
 
     # LangFuse API has a maximum limit of 100 per request
-    # We'll automatically paginate to get the requested number of samples
     API_BATCH_SIZE = 100
     
     try:
         all_filtered_observations = []
-        current_page = 1
-        total_fetched = 0
         total_raw_observations = 0
-        
-        logger.info(
-            f"Starting to fetch training data with limit={limit}, filters: "
-            f"langgraph_node={langgraph_node}, agent_name={agent_name}, ls_model_name={ls_model_name}"
-        )
+        total_pages_fetched = 0
 
-        # Keep fetching until we have enough filtered observations or no more data
-        while len(all_filtered_observations) < limit:
-            # Calculate how many more we need
-            remaining = limit - len(all_filtered_observations)
-            batch_size = min(API_BATCH_SIZE, remaining)
-            
-            # Fetch a batch of observations
-            observation_items, pagination = _list_observations(
-                state.langfuse_client,
-                limit=API_BATCH_SIZE,  # Always use max batch size for efficiency
-                page=current_page,
-                from_start_time=from_start_time,
-                to_start_time=None,
-                obs_type="GENERATION",  # Only LLM generations
-                name=None,
-                user_id=None,
-                trace_id=None,
-                parent_observation_id=None,
-                metadata=None,
-            )
-
-            if not observation_items:
-                logger.info(f"No more observations available (fetched {current_page} pages)")
-                break
-
-            # Convert to Python objects
-            raw_observations = [_sdk_object_to_python(obs) for obs in observation_items]
-            total_raw_observations += len(raw_observations)
-
-            # Filter by langgraph_node, agent_name, and ls_model_name
-            batch_filtered = []
-            for obs in raw_observations:
-                metadata = obs.get("metadata", {})
-
-                # Filter by langgraph_node (exact match)
-                if langgraph_node is not None:
-                    obs_langgraph_node = metadata.get("langgraph_node")
-                    if obs_langgraph_node != langgraph_node:
-                        continue
-
-                # Filter by agent_name (exact match)
-                if agent_name is not None:
-                    obs_agent_name = metadata.get("agent_name")
-                    if obs_agent_name != agent_name:
-                        continue
-
-                # Filter by ls_model_name (partial match, case-insensitive)
-                # This allows matching "Qwen3_235B" to "Qwen3_235B_A22B_Instruct_2507_ShenZhen"
-                if ls_model_name is not None:
-                    obs_ls_model_name = metadata.get("ls_model_name")
-                    if not obs_ls_model_name or ls_model_name.lower() not in obs_ls_model_name.lower():
-                        continue
-
-                batch_filtered.append(obs)
-            
-            all_filtered_observations.extend(batch_filtered)
-            
-            logger.info(
-                f"Page {current_page}: fetched {len(raw_observations)} observations, "
-                f"filtered to {len(batch_filtered)}, total filtered: {len(all_filtered_observations)}"
-            )
-
-            # Check if there are more pages
-            if pagination.get("next_page") is None:
-                logger.info("Reached last page of observations")
-                break
-            
-            # If we've collected enough, stop
+        # Process each time segment
+        for segment_idx, (segment_start, segment_end) in enumerate(time_segments):
             if len(all_filtered_observations) >= limit:
-                logger.info(f"Reached requested limit of {limit} samples")
+                logger.info(f"Reached limit of {limit} samples, stopping at segment {segment_idx + 1}/{len(time_segments)}")
                 break
-            
-            current_page += 1
-            total_fetched += len(raw_observations)
+
+            logger.info(
+                f"Processing time segment {segment_idx + 1}/{len(time_segments)}: "
+                f"{segment_start.isoformat()} to {segment_end.isoformat()}"
+            )
+
+            # Paginate through this time segment
+            current_page = 1
+            segment_pages = 0
+            while len(all_filtered_observations) < limit:
+                # Fetch a batch of observations for this time segment
+                observation_items, pagination = _list_observations(
+                    state.langfuse_client,
+                    limit=API_BATCH_SIZE,  # Always use max batch size for efficiency
+                    page=current_page,
+                    from_start_time=segment_start,
+                    to_start_time=segment_end,
+                    obs_type="GENERATION",  # Only LLM generations
+                    name=None,
+                    user_id=None,
+                    trace_id=None,
+                    parent_observation_id=None,
+                    metadata=None,
+                )
+
+                if not observation_items:
+                    logger.info(f"No more observations in segment {segment_idx + 1}, page {current_page}")
+                    break
+
+                # Convert to Python objects
+                raw_observations = [_sdk_object_to_python(obs) for obs in observation_items]
+                total_raw_observations += len(raw_observations)
+
+                # Filter by langgraph_node, agent_name, and ls_model_name
+                batch_filtered = []
+                for obs in raw_observations:
+                    metadata = obs.get("metadata", {})
+
+                    # Filter by langgraph_node (exact match)
+                    if langgraph_node is not None:
+                        obs_langgraph_node = metadata.get("langgraph_node")
+                        if obs_langgraph_node != langgraph_node:
+                            continue
+
+                    # Filter by agent_name (exact match)
+                    if agent_name is not None:
+                        obs_agent_name = metadata.get("agent_name")
+                        if obs_agent_name != agent_name:
+                            continue
+
+                    # Filter by ls_model_name (partial match, case-insensitive)
+                    # This allows matching "Qwen3_235B" to "Qwen3_235B_A22B_Instruct_2507_ShenZhen"
+                    if ls_model_name is not None:
+                        obs_ls_model_name = metadata.get("ls_model_name")
+                        if not obs_ls_model_name or ls_model_name.lower() not in obs_ls_model_name.lower():
+                            continue
+
+                    batch_filtered.append(obs)
+                
+                all_filtered_observations.extend(batch_filtered)
+                segment_pages += 1
+                total_pages_fetched += 1
+                
+                logger.info(
+                    f"Segment {segment_idx + 1}/{len(time_segments)}, Page {current_page}: "
+                    f"fetched {len(raw_observations)} observations, filtered to {len(batch_filtered)}, "
+                    f"total filtered: {len(all_filtered_observations)}"
+                )
+
+                # Check if there are more pages in this segment
+                if pagination.get("next_page") is None:
+                    logger.info(f"Reached last page in segment {segment_idx + 1}")
+                    break
+                
+                # If we've collected enough, stop
+                if len(all_filtered_observations) >= limit:
+                    logger.info(f"Reached requested limit of {limit} samples")
+                    break
+                
+                current_page += 1
+
+            logger.info(
+                f"Completed segment {segment_idx + 1}/{len(time_segments)}: "
+                f"fetched {segment_pages} pages, total filtered: {len(all_filtered_observations)}"
+            )
 
         # Trim to exact limit if we got more
         filtered_observations = all_filtered_observations[:limit]
 
         logger.info(
             f"Filtered {len(filtered_observations)} observations from {total_raw_observations} total "
-            f"across {current_page} pages (langgraph_node={langgraph_node}, agent_name={agent_name}, "
-            f"ls_model_name={ls_model_name})"
+            f"across {total_pages_fetched} pages and {len(time_segments)} time segments "
+            f"(langgraph_node={langgraph_node}, agent_name={agent_name}, ls_model_name={ls_model_name})"
         )
 
         # Format observations into training data
@@ -2395,7 +2435,9 @@ async def fetch_llm_training_data(
                 "agent_name": agent_name,
                 "ls_model_name": ls_model_name,
             },
-            "pages_fetched": current_page,
+            "time_range_days": round(age / 1440, 1),
+            "time_segments_processed": len(time_segments),
+            "pages_fetched": total_pages_fetched,
             "total_raw_observations": total_raw_observations,
             "file_path": None,
             "file_info": None,

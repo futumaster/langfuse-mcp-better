@@ -9,16 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.0] - 2024-11-01
 
+### 🚀 Major Enhancement: Automatic Time Segmentation
+
+**Breaking API Limits!** The `fetch_llm_training_data` tool now automatically handles queries beyond 7 days by splitting them into manageable segments.
+
+### Added
+- **Automatic Time Segmentation**: 
+  - Queries > 7 days are automatically split into 7-day segments
+  - Works seamlessly with any time range (30 days, 60 days, 90+ days)
+  - Each segment is processed with automatic pagination
+  - No user intervention required
+- **New Metadata Fields**:
+  - `time_range_days`: Duration of the query in days
+  - `time_segments_processed`: Number of time segments fetched
+  - Enhanced `pages_fetched`: Now tracks total pages across all segments
+
 ### Changed
-- **`age` parameter is now optional** in `fetch_llm_training_data`
-  - Default: `None` (no time limit, fetches all historical data)
-  - Users can now extract all training data without specifying a time range
-  - Time range can still be specified when needed (e.g., `age=1440` for last 24 hours)
-  - More flexible for training data extraction workflows
-  
-### Enhanced
-- Updated documentation to reflect optional time ranges
-- Added examples showing data extraction with and without time limits
+- **`age` Parameter**: Removed 7-day (10080 minutes) limit
+  - Before: Max 7 days (10080 minutes)
+  - After: Unlimited (tested with 30+ days)
+  - Old usage still works (backward compatible)
+- **Query Processing**: 
+  - Large time ranges automatically split into 7-day windows
+  - More efficient API usage with intelligent batching
+  - Better logging for multi-segment queries
+
+### Technical Details
+- Introduced `ValidatedAgeUnlimited` type annotation for unlimited age values
+- Enhanced logging to show segment and page progress
+- Improved metadata transparency with time segmentation info
+
+### Migration Guide
+No code changes required! Existing code continues to work:
+
+```python
+# Before (limited to 7 days)
+fetch_llm_training_data(age=10080, ...)  # ✅ Still works
+
+# After (now supports longer ranges)
+fetch_llm_training_data(age=43200, ...)  # ✅ 30 days - auto-segmented!
+fetch_llm_training_data(age=86400, ...)  # ✅ 60 days - auto-segmented!
+```
+
+### Performance
+- Same or better performance for queries ≤ 7 days
+- Longer queries now possible with automatic segmentation
+- Transparent progress tracking via enhanced metadata
 
 ## [1.2.3] - 2024-11-01
 

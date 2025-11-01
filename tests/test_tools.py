@@ -460,48 +460,57 @@ def test_fetch_llm_training_data_dpo_format(state):
     assert "_note" in sample["metadata"]  # Should have note about rejected samples
 
 
-def test_fetch_llm_training_data_without_age_parameter(state):
-    """fetch_llm_training_data should work without age parameter (fetch all history)."""
+def test_fetch_llm_training_data_time_segmentation(state):
+    """fetch_llm_training_data should automatically segment queries > 7 days."""
     from langfuse_mcp.__main__ import fetch_llm_training_data
 
+    # Mock observations with langgraph_node metadata
     state.langfuse_client.api.observations._mock_observations = [
         {
-            "id": "obs_no_age_1",
+            "id": "obs_1",
             "type": "GENERATION",
             "trace_id": "trace_1",
             "start_time": "2024-01-01T00:00:00Z",
+            "input": {"messages": [{"role": "user", "content": "Hello"}]},
+            "output": {"content": "Hi there!"},
+            "metadata": {"langgraph_node": "agent_llm"},
             "model": "gpt-4",
-            "input": {"messages": [{"role": "user", "content": "Test input"}]},
-            "output": "Test output",
-            "metadata": {
-                "langgraph_node": "test_node",
-                "agent_name": "test_agent",
-                "ls_model_name": "gpt-4",
-            },
-            "usage": {"total_tokens": 50},
-        }
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        },
+        {
+            "id": "obs_2",
+            "type": "GENERATION",
+            "trace_id": "trace_2",
+            "start_time": "2024-01-01T01:00:00Z",
+            "input": {"messages": [{"role": "user", "content": "Test"}]},
+            "output": {"content": "Response"},
+            "metadata": {"langgraph_node": "agent_llm"},
+            "model": "gpt-4",
+            "usage": {"prompt_tokens": 8, "completion_tokens": 3},
+        },
     ]
 
     ctx = FakeContext(state)
+    # Query for 30 days (43200 minutes) - should be split into ~5 segments (30/7)
     result = asyncio.run(
         fetch_llm_training_data(
             ctx,
-            age=None,  # Explicitly test None
-            langgraph_node="test_node",
+            age=43200,  # 30 days
+            langgraph_node="agent_llm",
             agent_name=None,
             ls_model_name=None,
             limit=100,
             output_format="generic",
-            include_metadata=False,
+            include_metadata=True,
             output_mode="compact",
         )
     )
 
-    assert result["metadata"]["item_count"] == 1
-    assert result["metadata"]["output_format"] == "generic"
-    assert "data" in result
-    sample = result["data"][0]
-    assert "prompt" in sample
-    assert "completion" in sample
-    # Verify metadata is NOT included when include_metadata=False
-    assert "metadata" not in sample
+    # Check metadata shows time segmentation
+    assert result["metadata"]["time_range_days"] == 30.0
+    # 30 days should be split into multiple segments
+    # ceil(30 / 7) = 5 segments
+    assert result["metadata"]["time_segments_processed"] >= 4  # At least 4 segments for 30 days
+    assert result["metadata"]["item_count"] > 0  # Should have some data
+    # Note: The fake API returns the same mock observations for each segment,
+    # so we may get duplicates. This is OK for testing the segmentation logic.

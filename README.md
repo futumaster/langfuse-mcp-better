@@ -252,16 +252,18 @@ The `fetch_llm_training_data` tool is specifically designed for extracting train
 
 ### Key Features
 
-- **🚀 Automatic Pagination**: Request any amount of data (1000, 10000+) - pagination is handled automatically
+- **🚀 Automatic Pagination & Time Segmentation**: 
+  - Request any amount of data (1000, 10000+) - pagination handled automatically
+  - Query any time range (30 days, 60 days, 90+ days) - automatically splits into 7-day segments
+  - No API limits or time restrictions exposed to users
 - **🔍 Smart Filtering**: 
   - `ls_model_name`: Partial matching (case-insensitive) - "Qwen3_235B" matches all variants
   - `langgraph_node` and `agent_name`: Exact matching for precision
   - At least one filter required
 - **Multiple Output Formats**: Support for OpenAI, Anthropic, generic, and DPO formats
 - **Rich Metadata**: Includes token usage, model parameters, timestamps, and node information
-- **Flexible Time Ranges**: Extract all historical data (default) or specify custom time ranges
 - **Flexible Combinations**: Combine multiple filters for precise data extraction
-- **Transparent**: Shows `pages_fetched` and `total_raw_observations` in metadata
+- **Transparent**: Shows `pages_fetched`, `time_segments_processed`, and `total_raw_observations` in metadata
 
 ### Output Formats
 
@@ -320,42 +322,41 @@ For Direct Preference Optimization:
 }
 ```
 
-### Automatic Pagination
+### Automatic Pagination & Time Segmentation
 
-**No more API limit errors!** The tool automatically handles pagination for large data requests:
+**No more API limits or time restrictions!** The tool automatically handles both pagination and long time ranges:
 
 ```python
-# Request 5000 samples - no problem!
+# Request 5000 samples from last 30 days - no problem!
 fetch_llm_training_data(
-    age=10080,
+    age=43200,  # 30 days (exceeds 7-day API limit)
     ls_model_name="gpt-4-turbo",
     limit=5000,  # Automatically fetches across multiple API calls
     output_format="openai"
 )
 
 # The tool will:
-# 1. Break this into 50 API calls (100 items each)
-# 2. Automatically fetch all pages
-# 3. Aggregate and return all 5000 samples
-# 4. Show metadata: pages_fetched=50, total_raw_observations=5000
+# 1. Split 30 days into 5 time segments (7 days each)
+# 2. For each segment, paginate through API calls (100 items each)
+# 3. Aggregate and return all samples across all segments
+# 4. Show metadata: time_segments_processed=5, pages_fetched=50, total_raw_observations=5000
 ```
+
+**Time Segmentation Details:**
+- Queries > 7 days are automatically split into 7-day segments
+- Each segment is processed with pagination
+- Works seamlessly with any time range (30 days, 60 days, 90+ days)
+- You never see API time limit errors!
 
 ### Usage Examples
 
 #### Extract all LLM calls from a specific LangGraph node
 ```python
-# Get all historical LLM interactions from the "agent_llm" node
+# Get 1000 LLM interactions from the "agent_llm" node in the last 24 hours
 fetch_llm_training_data(
+    age=1440,  # 24 hours in minutes
     langgraph_node="agent_llm",
     limit=1000,  # Default: will auto-paginate if needed
-    output_format="openai"
-)
-
-# Or specify a time range (last 24 hours)
-fetch_llm_training_data(
-    age=1440,  # Optional: 24 hours in minutes
-    langgraph_node="agent_llm",
-    limit=1000,
     output_format="openai"
 )
 ```
@@ -373,24 +374,17 @@ fetch_llm_training_data(
 
 #### Filter by model name (partial matching)
 ```python
-# Extract all historical Qwen model calls using partial name
+# Extract 10,000 Qwen model calls using partial name (30 days automatically segmented)
 # "Qwen3_235B" will match all variants like:
 #   - Qwen3_235B_A22B_Instruct_2507
 #   - Qwen3_235B_A22B_Instruct_2507_ShenZhen
 #   - Qwen3_235B_A22B_Instruct_2507_Beijing
 fetch_llm_training_data(
+    age=43200,  # 30 days (automatically split into 5 time segments)
     ls_model_name="Qwen3_235B",  # Partial name - matches all variants!
-    limit=10000,  # Large scale - automatically paginated
+    limit=10000,  # Large scale - automatically paginated and segmented
     output_format="openai"
     # include_metadata=False by default - pure training data
-)
-
-# Or limit to last 30 days
-fetch_llm_training_data(
-    age=43200,  # Optional: 30 days
-    ls_model_name="Qwen3_235B",
-    limit=10000,
-    output_format="openai"
 )
 ```
 
