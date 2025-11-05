@@ -2920,6 +2920,9 @@ async def fetch_llm_training_data(
 
         # Process each time segment
         for segment_idx, (segment_start, segment_end) in enumerate(time_segments):
+            # Check for cancellation at the start of each segment
+            await asyncio.sleep(0)  # Yield control to allow cancellation
+            
             if len(all_filtered_observations) >= limit:
                 logger.info(f"Reached limit of {limit} samples, stopping at segment {segment_idx + 1}/{len(time_segments)}")
                 break
@@ -2933,6 +2936,9 @@ async def fetch_llm_training_data(
             current_page = 1
             segment_pages = 0
             while len(all_filtered_observations) < limit:
+                # Check for cancellation at the start of each page
+                await asyncio.sleep(0)  # Yield control to allow cancellation
+                
                 try:
                     # Fetch a batch of observations with retry logic
                     observation_items, pagination = _list_observations_with_retry(
@@ -3140,6 +3146,21 @@ async def fetch_llm_training_data(
             metadata_block.update(file_meta)
 
         return {"data": processed_data, "metadata": metadata_block}
+    except asyncio.CancelledError:
+        # Handle cancellation gracefully
+        logger.warning(
+            f"Task cancelled by user. Collected {len(all_filtered_observations)} samples before cancellation."
+        )
+        
+        # If incremental save is enabled, data is already saved
+        if incremental_save and incremental_file_path and os.path.exists(incremental_file_path):
+            logger.info(
+                f"Partial data saved to incremental file: {incremental_file_path} "
+                f"({len(all_filtered_observations)} samples)"
+            )
+        
+        # Re-raise to properly cancel the task
+        raise
     except Exception as e:
         logger.error(f"Error fetching LLM training data: {str(e)}")
         logger.exception(e)
