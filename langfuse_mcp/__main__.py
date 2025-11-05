@@ -2804,6 +2804,14 @@ async def fetch_llm_training_data(
             "Default: True. Set to False to raise exception on any failure."
         ),
     ),
+    incremental_save: bool = Field(
+        True,
+        description=(
+            "Save data incrementally as it's fetched to avoid data loss on timeout/crash. "
+            "Default: True. Data is appended to a temporary file and consolidated at the end. "
+            "Set to False to only save at the end (faster but riskier)."
+        ),
+    ),
 ) -> ResponseDict | str:
     """Extract LLM training data from LangGraph nodes for fine-tuning and reinforcement learning.
 
@@ -2886,6 +2894,24 @@ async def fetch_llm_training_data(
     # Initialize partial result handler and request tracker
     partial_handler = PartialResultHandler(allow_partial=allow_partial_results)
     tracker = RequestTracker()
+    
+    # Setup incremental save file if enabled
+    incremental_file_path = None
+    if incremental_save and state.dump_dir:
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        safe_filters = []
+        if langgraph_node:
+            safe_filters.append(f"node_{langgraph_node}")
+        if agent_name:
+            safe_filters.append(f"agent_{agent_name}")
+        if ls_model_name:
+            safe_filters.append(f"model_{ls_model_name.replace('/', '_')}")
+        filter_str = "_".join(safe_filters) if safe_filters else "training_data"
+        incremental_file_path = os.path.join(
+            state.dump_dir,
+            f"{filter_str}_{output_format}_incremental_{timestamp}.jsonl"
+        )
+        logger.info(f"Incremental save enabled: {incremental_file_path}")
     
     try:
         all_filtered_observations = []
@@ -2971,6 +2997,18 @@ async def fetch_llm_training_data(
                             continue
 
                     batch_filtered.append(obs)
+                
+                # Incremental save: format and save batch immediately
+                if incremental_save and incremental_file_path and batch_filtered:
+                    try:
+                        with open(incremental_file_path, "a", encoding="utf-8") as f:
+                            for obs in batch_filtered:
+                                formatted_sample = _format_training_sample(obs, output_format, include_metadata)
+                                if formatted_sample:
+                                    f.write(json.dumps(formatted_sample, ensure_ascii=False) + "\n")
+                        logger.debug(f"Incrementally saved {len(batch_filtered)} samples to {incremental_file_path}")
+                    except Exception as save_error:
+                        logger.warning(f"Failed to incrementally save batch: {save_error}")
                 
                 all_filtered_observations.extend(batch_filtered)
                 segment_pages += 1
@@ -3076,6 +3114,18 @@ async def fetch_llm_training_data(
             "file_path": None,
             "file_info": None,
         }
+        
+        # Add incremental save file info if used
+        if incremental_save and incremental_file_path and os.path.exists(incremental_file_path):
+            file_size = os.path.getsize(incremental_file_path)
+            metadata_block["incremental_save_file"] = {
+                "path": incremental_file_path,
+                "size_bytes": file_size,
+                "size_mb": round(file_size / (1024 * 1024), 2),
+                "format": "jsonl",
+                "note": "Data saved incrementally during fetch to prevent data loss"
+            }
+            logger.info(f"Incremental save completed: {incremental_file_path} ({metadata_block['incremental_save_file']['size_mb']} MB)")
         
         # Add partial result details if applicable
         if partial_metadata.is_partial:
