@@ -5,14 +5,17 @@ agents to query trace data, observations, and exceptions from Langfuse.
 """
 
 import argparse
+import asyncio
 import inspect
 import json
 import logging
 import os
+import random
 import sys
+import time
 from collections import Counter
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -23,6 +26,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
 from cachetools import LRUCache
+import httpx
 
 if sys.version_info >= (3, 14):
     raise SystemExit(
@@ -160,6 +164,485 @@ OUTPUT_MODE_LITERAL = Literal["compact", "full_json_string", "full_json_file"]
 ResponseDict = dict[str, Any]
 
 
+@dataclass
+class TimeoutConfig:
+    """HTTP timeout configuration for Langfuse API requests.
+    
+    This class manages timeout settings for different phases of HTTP requests:
+    - connect_timeout: Time to establish a connection
+    - request_timeout: Overall request timeout (deprecated, use read_timeout)
+    - read_timeout: Time to read response data
+    """
+    
+    connect_timeout: float = 10.0  # Connection timeout in seconds
+    request_timeout: float = 30.0  # Request timeout in seconds (for backward compatibility)
+    read_timeout: float = 30.0     # Read timeout in seconds
+    
+    def __post_init__(self):
+        """Validate timeout values after initialization."""
+        if self.connect_timeout <= 0:
+            logger.warning(f"Invalid connect_timeout {self.connect_timeout}, using default 10.0s")
+            self.connect_timeout = 10.0
+        if self.read_timeout <= 0:
+            logger.warning(f"Invalid read_timeout {self.read_timeout}, using default 30.0s")
+            self.read_timeout = 30.0
+        if self.request_timeout <= 0:
+            logger.warning(f"Invalid request_timeout {self.request_timeout}, using default 30.0s")
+            self.request_timeout = 30.0
+        
+        # Warn if timeouts are unreasonably large
+        if self.connect_timeout > 60:
+            logger.warning(f"connect_timeout {self.connect_timeout}s is very large, consider reducing it")
+        if self.read_timeout > 300:
+            logger.warning(f"read_timeout {self.read_timeout}s is very large, consider reducing it")
+    
+    def to_httpx_timeout(self) -> httpx.Timeout:
+        """Convert to httpx.Timeout object.
+        
+        Returns:
+            httpx.Timeout object with configured timeout values
+        """
+        return httpx.Timeout(
+            connect=self.connect_timeout,
+            read=self.read_timeout,
+            write=self.request_timeout,
+            pool=5.0  # Pool timeout for acquiring a connection from the pool
+        )
+    
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> "TimeoutConfig":
+        """Create TimeoutConfig from command line arguments.
+        
+        Args:
+            args: Parsed command line arguments
+            
+        Returns:
+            TimeoutConfig instance with values from args or defaults
+        """
+        return cls(
+            connect_timeout=getattr(args, "connect_timeout", 10.0),
+            request_timeout=getattr(args, "request_timeout", 30.0),
+            read_timeout=getattr(args, "read_timeout", 30.0),
+        )
+
+
+class ErrorType(str, Enum):
+    """Error type enumeration for classifying HTTP and network errors."""
+    
+    TIMEOUT = "timeout"
+    CONNECTION = "connection"
+    RATE_LIMIT = "rate_limit"
+    AUTH = "auth"
+    SERVER_ERROR = "server_error"
+    CLIENT_ERROR = "client_error"
+    UNKNOWN = "unknown"
+
+
+class ErrorClassifier:
+    """Classifier for HTTP and network errors to determine retry strategy."""
+    
+    @staticmethod
+    def classify(error: Exception) -> ErrorType:
+        """Classify an exception into an error type.
+        
+        Args:
+            error: The exception to classify
+            
+        Returns:
+            ErrorType enum value indicating the error category
+        """
+        # Check for timeout errors
+        if isinstance(error, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.ConnectTimeout)):
+            return ErrorType.TIMEOUT
+        
+        # Check for connection errors
+        if isinstance(error, (httpx.ConnectError, httpx.NetworkError)):
+            return ErrorType.CONNECTION
+        
+        # Check for HTTP status errors
+        if isinstance(error, httpx.HTTPStatusError):
+            status_code = error.response.status_code
+            if status_code == 429:
+                return ErrorType.RATE_LIMIT
+            elif status_code in (401, 403):
+                return ErrorType.AUTH
+            elif 500 <= status_code < 600:
+                return ErrorType.SERVER_ERROR
+            elif 400 <= status_code < 500:
+                return ErrorType.CLIENT_ERROR
+        
+        return ErrorType.UNKNOWN
+    
+    @staticmethod
+    def should_retry(error_type: ErrorType) -> bool:
+        """Determine if an error type should be retried.
+        
+        Args:
+            error_type: The classified error type
+            
+        Returns:
+            True if the error should be retried, False otherwise
+        """
+        # Retry temporary errors that might succeed on retry
+        return error_type in (
+            ErrorType.TIMEOUT,
+            ErrorType.CONNECTION,
+            ErrorType.RATE_LIMIT,
+            ErrorType.SERVER_ERROR,
+        )
+    
+    @staticmethod
+    def get_retry_after(error: Exception) -> float | None:
+        """Extract Retry-After header value from HTTP error.
+        
+        Args:
+            error: The exception to extract retry delay from
+            
+        Returns:
+            Retry delay in seconds, or None if not available
+        """
+        if isinstance(error, httpx.HTTPStatusError):
+            retry_after = error.response.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    # Try to parse as seconds
+                    return float(retry_after)
+                except ValueError:
+                    # Could be HTTP-date format, not handling for now
+                    logger.debug(f"Could not parse Retry-After header: {retry_after}")
+        return None
+
+
+@dataclass
+class RetryConfig:
+    """Configuration for retry behavior."""
+    
+    max_retries: int = 3
+    initial_delay: float = 1.0
+    max_delay: float = 10.0
+    exponential_base: float = 2.0
+    jitter: bool = True  # Add random jitter to avoid thundering herd
+
+
+class RetryManager:
+    """Manager for retry logic with exponential backoff."""
+    
+    def __init__(self, config: RetryConfig):
+        """Initialize retry manager with configuration.
+        
+        Args:
+            config: Retry configuration
+        """
+        self.config = config
+    
+    def calculate_delay(self, attempt: int) -> float:
+        """Calculate retry delay with exponential backoff and optional jitter.
+        
+        Args:
+            attempt: Current retry attempt number (0-indexed)
+            
+        Returns:
+            Delay in seconds before next retry
+        """
+        # Calculate exponential backoff
+        delay = min(
+            self.config.initial_delay * (self.config.exponential_base ** attempt),
+            self.config.max_delay
+        )
+        
+        # Add jitter to avoid thundering herd
+        if self.config.jitter:
+            # Add ±25% random jitter
+            jitter_range = delay * 0.25
+            delay += random.uniform(-jitter_range, jitter_range)
+        
+        return max(0, delay)
+    
+    def execute_with_retry(
+        self,
+        func: Callable,
+        *args,
+        error_context: str = "",
+        **kwargs
+    ) -> Any:
+        """Execute function with retry logic (synchronous version).
+        
+        Args:
+            func: Function to execute
+            *args: Positional arguments for func
+            error_context: Context string for error logging
+            **kwargs: Keyword arguments for func
+            
+        Returns:
+            Result from successful function execution
+            
+        Raises:
+            Exception: The last exception if all retries fail
+        """
+        last_error = None
+        
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                last_error = e
+                error_type = ErrorClassifier.classify(e)
+                
+                # Don't retry non-retryable errors
+                if not ErrorClassifier.should_retry(error_type):
+                    logger.error(
+                        f"{error_context} - Non-retryable error: {error_type.value} - {str(e)}"
+                    )
+                    raise
+                
+                # Max retries reached
+                if attempt >= self.config.max_retries:
+                    logger.error(
+                        f"{error_context} - Max retries ({self.config.max_retries}) exceeded. "
+                        f"Last error: {error_type.value} - {str(e)}"
+                    )
+                    raise
+                
+                # Calculate delay
+                if error_type == ErrorType.RATE_LIMIT:
+                    delay = ErrorClassifier.get_retry_after(e) or self.calculate_delay(attempt)
+                else:
+                    delay = self.calculate_delay(attempt)
+                
+                logger.warning(
+                    f"{error_context} - Attempt {attempt + 1}/{self.config.max_retries} failed "
+                    f"with {error_type.value}. Retrying in {delay:.2f}s..."
+                )
+                
+                time.sleep(delay)
+        
+        # Should not reach here, but for type safety
+        raise last_error
+    
+    async def execute_with_retry_async(
+        self,
+        func: Callable,
+        *args,
+        error_context: str = "",
+        **kwargs
+    ) -> Any:
+        """Execute function with retry logic (asynchronous version).
+        
+        Args:
+            func: Async function to execute
+            *args: Positional arguments for func
+            error_context: Context string for error logging
+            **kwargs: Keyword arguments for func
+            
+        Returns:
+            Result from successful function execution
+            
+        Raises:
+            Exception: The last exception if all retries fail
+        """
+        last_error = None
+        
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                if asyncio.iscoroutinefunction(func):
+                    return await func(*args, **kwargs)
+                else:
+                    return func(*args, **kwargs)
+            except Exception as e:
+                last_error = e
+                error_type = ErrorClassifier.classify(e)
+                
+                # Don't retry non-retryable errors
+                if not ErrorClassifier.should_retry(error_type):
+                    logger.error(
+                        f"{error_context} - Non-retryable error: {error_type.value} - {str(e)}"
+                    )
+                    raise
+                
+                # Max retries reached
+                if attempt >= self.config.max_retries:
+                    logger.error(
+                        f"{error_context} - Max retries ({self.config.max_retries}) exceeded. "
+                        f"Last error: {error_type.value} - {str(e)}"
+                    )
+                    raise
+                
+                # Calculate delay
+                if error_type == ErrorType.RATE_LIMIT:
+                    delay = ErrorClassifier.get_retry_after(e) or self.calculate_delay(attempt)
+                else:
+                    delay = self.calculate_delay(attempt)
+                
+                logger.warning(
+                    f"{error_context} - Attempt {attempt + 1}/{self.config.max_retries} failed "
+                    f"with {error_type.value}. Retrying in {delay:.2f}s..."
+                )
+                
+                await asyncio.sleep(delay)
+        
+        # Should not reach here, but for type safety
+        raise last_error
+
+
+@dataclass
+class PartialResultMetadata:
+    """Metadata for partial results when some requests fail."""
+    
+    is_partial: bool
+    total_pages_attempted: int
+    successful_pages: int
+    failed_at_page: int | None
+    error_message: str | None
+    items_collected: int
+
+
+class PartialResultHandler:
+    """Handler for collecting partial results when some requests fail."""
+    
+    def __init__(self, allow_partial: bool = True):
+        """Initialize partial result handler.
+        
+        Args:
+            allow_partial: If True, return partial results on failure. If False, raise exception.
+        """
+        self.allow_partial = allow_partial
+        self.collected_items: list[Any] = []
+        self.pages_attempted = 0
+        self.successful_pages = 0
+        self.last_error: Exception | None = None
+    
+    def add_page_result(self, items: list[Any]) -> None:
+        """Add a successful page of results.
+        
+        Args:
+            items: List of items from the successful page
+        """
+        self.collected_items.extend(items)
+        self.pages_attempted += 1
+        self.successful_pages += 1
+    
+    def record_failure(self, error: Exception) -> None:
+        """Record a failed page attempt.
+        
+        Args:
+            error: The exception that caused the failure
+        """
+        self.pages_attempted += 1
+        self.last_error = error
+    
+    def should_continue(self) -> bool:
+        """Determine if processing should continue after a failure.
+        
+        Returns:
+            True if should continue (partial results allowed), False otherwise
+        """
+        if not self.allow_partial:
+            return self.last_error is None
+        return True
+    
+    def get_result(self) -> tuple[list[Any], PartialResultMetadata]:
+        """Get collected results and metadata.
+        
+        Returns:
+            Tuple of (collected items, metadata about the collection)
+            
+        Raises:
+            Exception: If allow_partial is False and there was an error
+        """
+        metadata = PartialResultMetadata(
+            is_partial=self.last_error is not None,
+            total_pages_attempted=self.pages_attempted,
+            successful_pages=self.successful_pages,
+            failed_at_page=self.pages_attempted if self.last_error else None,
+            error_message=str(self.last_error) if self.last_error else None,
+            items_collected=len(self.collected_items),
+        )
+        
+        # If partial results not allowed and there was an error, raise it
+        if not self.allow_partial and self.last_error:
+            raise self.last_error
+        
+        # Log warning if returning partial results
+        if metadata.is_partial:
+            logger.warning(
+                f"Returning partial results: {metadata.items_collected} items from "
+                f"{metadata.successful_pages}/{metadata.total_pages_attempted} pages. "
+                f"Error: {metadata.error_message}"
+            )
+        
+        return self.collected_items, metadata
+
+
+@dataclass
+class RequestMetrics:
+    """Metrics for tracking request performance."""
+    
+    total_requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    total_duration: float = 0.0
+    avg_response_time: float = 0.0
+    
+    def update(self, duration: float, success: bool) -> None:
+        """Update metrics with a new request result.
+        
+        Args:
+            duration: Request duration in seconds
+            success: Whether the request succeeded
+        """
+        self.total_requests += 1
+        if success:
+            self.successful_requests += 1
+        else:
+            self.failed_requests += 1
+        self.total_duration += duration
+        self.avg_response_time = self.total_duration / self.total_requests
+
+
+class RequestTracker:
+    """Tracker for monitoring request progress and performance."""
+    
+    def __init__(self):
+        """Initialize request tracker."""
+        self.metrics = RequestMetrics()
+        self.start_time: float | None = None
+    
+    @contextmanager
+    def track_request(self):
+        """Context manager to track a single request.
+        
+        Yields:
+            None
+            
+        Example:
+            with tracker.track_request():
+                # Make API call
+                pass
+        """
+        start = time.time()
+        success = False
+        try:
+            yield
+            success = True
+        finally:
+            duration = time.time() - start
+            self.metrics.update(duration, success)
+    
+    def log_progress(self, current_page: int, total_items: int) -> None:
+        """Log progress information.
+        
+        Args:
+            current_page: Current page number
+            total_items: Total items collected so far
+        """
+        if current_page % 10 == 0:
+            logger.info(
+                f"Progress: Page {current_page}, Items: {total_items}, "
+                f"Avg response time: {self.metrics.avg_response_time:.2f}s, "
+                f"Success rate: {self.metrics.successful_requests}/{self.metrics.total_requests}"
+            )
+
+
 def _ensure_output_mode(mode: OUTPUT_MODE_LITERAL | OutputMode | str | OutputMode) -> OutputMode:
     """Normalize user-provided output mode values."""
     if isinstance(mode, OutputMode):
@@ -247,6 +730,42 @@ def _build_arg_parser(env_defaults: dict[str, Any]) -> argparse.ArgumentParser:
         action="store_true",
         default=env_defaults["log_to_console"],
         help="Also emit logs to stdout in addition to the rotating file handler.",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=30.0,
+        help="HTTP request timeout in seconds (default: 30). Increase if experiencing timeout errors.",
+    )
+    parser.add_argument(
+        "--connect-timeout",
+        type=float,
+        default=10.0,
+        help="HTTP connection timeout in seconds (default: 10). Time to establish a connection.",
+    )
+    parser.add_argument(
+        "--read-timeout",
+        type=float,
+        default=30.0,
+        help="HTTP read timeout in seconds (default: 30). Time to read response data.",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=3,
+        help="Maximum number of retry attempts for failed requests (default: 3).",
+    )
+    parser.add_argument(
+        "--retry-initial-delay",
+        type=float,
+        default=1.0,
+        help="Initial delay in seconds before first retry (default: 1.0).",
+    )
+    parser.add_argument(
+        "--retry-max-delay",
+        type=float,
+        default=10.0,
+        help="Maximum delay in seconds between retries (default: 10.0).",
     )
     parser.add_argument(
         "--no-log-to-console",
@@ -409,6 +928,62 @@ def _list_observations(
         pagination = {**pagination, "total": len(items)}
 
     return items, pagination
+
+
+def _list_observations_with_retry(
+    retry_manager: RetryManager,
+    tracker: RequestTracker,
+    langfuse_client: Any,
+    *,
+    limit: int,
+    page: int,
+    from_start_time: datetime,
+    to_start_time: datetime | None,
+    obs_type: str | None,
+    name: str | None = None,
+    user_id: str | None = None,
+    trace_id: str | None = None,
+    parent_observation_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Fetch observations with retry logic and request tracking.
+    
+    This wrapper adds retry logic and performance tracking to _list_observations.
+    
+    Args:
+        retry_manager: RetryManager instance for handling retries
+        tracker: RequestTracker instance for monitoring performance
+        langfuse_client: Langfuse client instance
+        ... (same as _list_observations)
+        
+    Returns:
+        Tuple of (items, pagination metadata)
+        
+    Raises:
+        Exception: If all retries fail
+    """
+    error_context = f"Fetching observations page {page}"
+    
+    def fetch_with_tracking():
+        with tracker.track_request():
+            return _list_observations(
+                langfuse_client,
+                limit=limit,
+                page=page,
+                from_start_time=from_start_time,
+                to_start_time=to_start_time,
+                obs_type=obs_type,
+                name=name,
+                user_id=user_id,
+                trace_id=trace_id,
+                parent_observation_id=parent_observation_id,
+                metadata=metadata,
+            )
+    
+    return retry_manager.execute_with_retry(
+        fetch_with_tracking,
+        error_context=error_context,
+    )
 
 
 def _get_observation(langfuse_client: Any, observation_id: str) -> Any:
@@ -802,6 +1377,12 @@ class MCPState:
     )
     dump_dir: str = field(
         default=None, metadata={"description": "Directory to save full JSON dumps when 'output_mode' is 'full_json_file'"}
+    )
+    timeout_config: TimeoutConfig = field(
+        default_factory=TimeoutConfig, metadata={"description": "HTTP timeout configuration for API requests"}
+    )
+    retry_manager: "RetryManager" = field(
+        default_factory=lambda: RetryManager(RetryConfig()), metadata={"description": "Retry manager for handling failed requests"}
     )
 
 
@@ -2216,6 +2797,13 @@ async def fetch_llm_training_data(
             "'full_json_file': Saves complete data to file and returns summary."
         ),
     ),
+    allow_partial_results: bool = Field(
+        True,
+        description=(
+            "Allow returning partial results if some requests fail. "
+            "Default: True. Set to False to raise exception on any failure."
+        ),
+    ),
 ) -> ResponseDict | str:
     """Extract LLM training data from LangGraph nodes for fine-tuning and reinforcement learning.
 
@@ -2295,6 +2883,10 @@ async def fetch_llm_training_data(
     # LangFuse API has a maximum limit of 100 per request
     API_BATCH_SIZE = 100
     
+    # Initialize partial result handler and request tracker
+    partial_handler = PartialResultHandler(allow_partial=allow_partial_results)
+    tracker = RequestTracker()
+    
     try:
         all_filtered_observations = []
         total_raw_observations = 0
@@ -2315,20 +2907,36 @@ async def fetch_llm_training_data(
             current_page = 1
             segment_pages = 0
             while len(all_filtered_observations) < limit:
-                # Fetch a batch of observations for this time segment
-                observation_items, pagination = _list_observations(
-                    state.langfuse_client,
-                    limit=API_BATCH_SIZE,  # Always use max batch size for efficiency
-                    page=current_page,
-                    from_start_time=segment_start,
-                    to_start_time=segment_end,
-                    obs_type="GENERATION",  # Only LLM generations
-                    name=None,
-                    user_id=None,
-                    trace_id=None,
-                    parent_observation_id=None,
-                    metadata=None,
-                )
+                try:
+                    # Fetch a batch of observations with retry logic
+                    observation_items, pagination = _list_observations_with_retry(
+                        state.retry_manager,
+                        tracker,
+                        state.langfuse_client,
+                        limit=API_BATCH_SIZE,  # Always use max batch size for efficiency
+                        page=current_page,
+                        from_start_time=segment_start,
+                        to_start_time=segment_end,
+                        obs_type="GENERATION",  # Only LLM generations
+                        name=None,
+                        user_id=None,
+                        trace_id=None,
+                        parent_observation_id=None,
+                        metadata=None,
+                    )
+                except Exception as e:
+                    # Record failure and decide whether to continue
+                    partial_handler.record_failure(e)
+                    logger.error(
+                        f"Failed to fetch page {current_page} in segment {segment_idx + 1}: {str(e)}"
+                    )
+                    
+                    if not partial_handler.should_continue():
+                        # Re-raise if partial results not allowed
+                        raise
+                    
+                    # Break out of pagination loop for this segment
+                    break
 
                 if not observation_items:
                     logger.info(f"No more observations in segment {segment_idx + 1}, page {current_page}")
@@ -2368,11 +2976,18 @@ async def fetch_llm_training_data(
                 segment_pages += 1
                 total_pages_fetched += 1
                 
+                # Record successful page
+                partial_handler.add_page_result(batch_filtered)
+                
+                # Log progress
                 logger.info(
                     f"Segment {segment_idx + 1}/{len(time_segments)}, Page {current_page}: "
                     f"fetched {len(raw_observations)} observations, filtered to {len(batch_filtered)}, "
                     f"total filtered: {len(all_filtered_observations)}"
                 )
+                
+                # Log progress every 10 pages
+                tracker.log_progress(total_pages_fetched, len(all_filtered_observations))
 
                 # If we've collected enough, stop
                 if len(all_filtered_observations) >= limit:
@@ -2396,6 +3011,9 @@ async def fetch_llm_training_data(
                 f"fetched {segment_pages} pages, total filtered: {len(all_filtered_observations)}"
             )
 
+        # Get partial result metadata
+        _, partial_metadata = partial_handler.get_result()
+        
         # Trim to exact limit if we got more
         filtered_observations = all_filtered_observations[:limit]
 
@@ -2404,6 +3022,14 @@ async def fetch_llm_training_data(
             f"across {total_pages_fetched} pages and {len(time_segments)} time segments "
             f"(langgraph_node={langgraph_node}, agent_name={agent_name}, ls_model_name={ls_model_name})"
         )
+        
+        # Log partial result warning if applicable
+        if partial_metadata.is_partial:
+            logger.warning(
+                f"Returning partial results due to errors. "
+                f"Successfully fetched {partial_metadata.successful_pages}/{partial_metadata.total_pages_attempted} pages. "
+                f"Last error: {partial_metadata.error_message}"
+            )
 
         # Format observations into training data
         training_data = []
@@ -2444,9 +3070,22 @@ async def fetch_llm_training_data(
             "time_segments_processed": len(time_segments),
             "pages_fetched": total_pages_fetched,
             "total_raw_observations": total_raw_observations,
+            "avg_response_time": round(tracker.metrics.avg_response_time, 2),
+            "success_rate": f"{tracker.metrics.successful_requests}/{tracker.metrics.total_requests}",
+            "partial_results": partial_metadata.is_partial,
             "file_path": None,
             "file_info": None,
         }
+        
+        # Add partial result details if applicable
+        if partial_metadata.is_partial:
+            metadata_block["partial_result_info"] = {
+                "successful_pages": partial_metadata.successful_pages,
+                "total_pages_attempted": partial_metadata.total_pages_attempted,
+                "failed_at_page": partial_metadata.failed_at_page,
+                "error_message": partial_metadata.error_message,
+            }
+        
         if file_meta:
             metadata_block.update(file_meta)
 
@@ -2791,7 +3430,15 @@ Scores are evaluations attached to traces or observations.
     return schema
 
 
-def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 100, dump_dir: str = None) -> FastMCP:
+def app_factory(
+    public_key: str,
+    secret_key: str,
+    host: str,
+    cache_size: int = 100,
+    dump_dir: str = None,
+    timeout_config: TimeoutConfig = None,
+    retry_manager: RetryManager = None,
+) -> FastMCP:
     """Create a FastMCP server with Langfuse tools.
 
     Args:
@@ -2801,10 +3448,19 @@ def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 1
         cache_size: Size of LRU caches used for caching data
         dump_dir: Directory to save full JSON dumps when 'output_mode' is 'full_json_file'.
             The directory will be created if it doesn't exist.
+        timeout_config: HTTP timeout configuration for API requests
+        retry_manager: Retry manager for handling failed requests
 
     Returns:
         FastMCP server instance
     """
+    # Use default timeout config if not provided
+    if timeout_config is None:
+        timeout_config = TimeoutConfig()
+    
+    # Use default retry manager if not provided
+    if retry_manager is None:
+        retry_manager = RetryManager(RetryConfig())
 
     @asynccontextmanager
     async def lifespan(server: FastMCP) -> AsyncIterator[MCPState]:
@@ -2837,6 +3493,8 @@ def app_factory(public_key: str, secret_key: str, host: str, cache_size: int = 1
             exception_type_map=LRUCache(maxsize=cache_size),
             exceptions_by_filepath=LRUCache(maxsize=cache_size),
             dump_dir=dump_dir,
+            timeout_config=timeout_config,
+            retry_manager=retry_manager,
         )
 
         try:
@@ -2895,9 +3553,34 @@ def main():
             logger.error(f"Failed to create dump directory {args.dump_dir}: {e}")
             args.dump_dir = None
 
+    # Create timeout configuration
+    timeout_config = TimeoutConfig.from_args(args)
+    logger.info(
+        f"Timeout configuration: connect={timeout_config.connect_timeout}s, "
+        f"read={timeout_config.read_timeout}s, request={timeout_config.request_timeout}s"
+    )
+
+    # Create retry configuration
+    retry_config = RetryConfig(
+        max_retries=getattr(args, "max_retries", 3),
+        initial_delay=getattr(args, "retry_initial_delay", 1.0),
+        max_delay=getattr(args, "retry_max_delay", 10.0),
+    )
+    retry_manager = RetryManager(retry_config)
+    logger.info(
+        f"Retry configuration: max_retries={retry_config.max_retries}, "
+        f"initial_delay={retry_config.initial_delay}s, max_delay={retry_config.max_delay}s"
+    )
+
     logger.info(f"Starting MCP - host:{args.host} cache:{args.cache_size} keys:{args.public_key[:4]}.../{args.secret_key[:4]}...")
     app = app_factory(
-        public_key=args.public_key, secret_key=args.secret_key, host=args.host, cache_size=args.cache_size, dump_dir=args.dump_dir
+        public_key=args.public_key,
+        secret_key=args.secret_key,
+        host=args.host,
+        cache_size=args.cache_size,
+        dump_dir=args.dump_dir,
+        timeout_config=timeout_config,
+        retry_manager=retry_manager,
     )
 
     app.run(transport="stdio")
